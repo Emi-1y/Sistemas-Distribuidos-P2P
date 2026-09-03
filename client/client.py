@@ -6,6 +6,7 @@ from client.commands import (
     rmdir,
     rm,
     send,
+    receive,
     change_directory
 )
 
@@ -73,6 +74,13 @@ def main():
                 continue
 
             send(current_path, args[0])
+
+        elif command == "receive":
+            if len(args) != 1:
+                print("Uso: receive <archivo>")
+                continue
+
+            receive(current_path, args[0])
 
         elif command == "cd":
             if len(args) != 1:

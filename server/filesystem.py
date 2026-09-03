@@ -178,3 +178,21 @@ def remove_file(remote_path: str):
     return {
         "message": "Archivo eliminado correctamente"
     }
+
+
+def get_file(remote_path: str) -> Path:
+    path = resolve_path(remote_path)
+
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="El archivo no existe"
+        )
+
+    if not path.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail="La ruta no corresponde a un archivo"
+        )
+
+    return path

@@ -10,6 +10,7 @@ from server.filesystem import (
     remove_directory,
     remove_file,
     save_file,
+    get_file,
     resolve_path
 )
 
@@ -59,3 +60,13 @@ def rm(path: str):
 @app.post("/files/upload")
 def send(path: str = Form(...), file: UploadFile = File(...)):
     return save_file(path, file)
+
+
+@app.get("/files/download")
+def receive(path: str):
+    file_path = get_file(path)
+    return FileResponse(
+        path=file_path,
+        filename=file_path.name,
+        media_type="application/octet-stream"
+    )

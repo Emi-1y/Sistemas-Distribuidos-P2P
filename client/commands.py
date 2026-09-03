@@ -1,4 +1,3 @@
-# FUNCIONES DE MANEJOR DE ARCHIVOS
 import posixpath
 from pathlib import Path
 
@@ -141,6 +140,45 @@ def send(current_path: str, filename: str):
 
     except requests.RequestException:
         print("Error: no se pudo conectar con el servidor")
+
+
+def receive(current_path: str, filename: str):
+    name = filename.strip()
+
+    if not name:
+        print("Error: el archivo debe tener un nombre")
+        return
+
+    remote_path = build_path(current_path, name)
+    local_file = Path(name)
+
+    if local_file.exists():
+        print(f"Error: ya existe un archivo local llamado '{name}'")
+        return
+
+    temp_file = local_file.with_name(local_file.name + ".part")
+
+    try:
+        response = requests.get(
+            f"{SERVER_URL}/files/download",
+            params={"path": remote_path},
+            stream=True
+        )
+
+        if response.status_code != 200:
+            print_error(response)
+            return
+
+        with temp_file.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                handle.write(chunk)
+
+        temp_file.rename(local_file)
+        print("Archivo descargado correctamente")
+
+    except requests.RequestException:
+        print("Error: no se pudo conectar con el servidor")
+        temp_file.unlink(missing_ok=True)
 
 
 def change_directory(current_path: str, target: str) -> str:
