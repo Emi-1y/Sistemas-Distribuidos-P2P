@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -9,6 +9,7 @@ from server.filesystem import (
     create_directory,
     remove_directory,
     remove_file,
+    save_file,
     resolve_path
 )
 
@@ -53,3 +54,8 @@ def rmdir(path: str):
 @app.delete("/files")
 def rm(path: str):
     return remove_file(path)
+
+
+@app.post("/files/upload")
+def send(path: str = Form(...), file: UploadFile = File(...)):
+    return save_file(path, file)

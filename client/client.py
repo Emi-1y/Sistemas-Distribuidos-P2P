@@ -5,6 +5,7 @@ from client.commands import (
     mkdir,
     rmdir,
     rm,
+    send,
     change_directory
 )
 
@@ -65,6 +66,13 @@ def main():
                 continue
 
             rm(current_path, args[0])
+
+        elif command == "send":
+            if len(args) != 1:
+                print("Uso: send <archivo>")
+                continue
+
+            send(current_path, args[0])
 
         elif command == "cd":
             if len(args) != 1:
