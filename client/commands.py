@@ -162,72 +162,18 @@ def rm(current_path: str, name: str):
 
 
 def send(current_path: str, filename: str):
-    name = filename.strip()
+    """Retirado en la SPEC-04, reconstruido en la SPEC-05.
 
-    if not name:
-        print("Error: el archivo debe tener un nombre")
-        return
-
-    local_file = Path(name)
-
-    if not local_file.is_file():
-        print(f"Error: el archivo local '{name}' no existe")
-        return
-
-    try:
-        with local_file.open("rb") as handle:
-            response = requests.post(
-                f"{PEER_URL}/files/upload",
-                data={"path": current_path},
-                files={"file": (local_file.name, handle)}
-            )
-
-        if response.status_code == 200:
-            print("Archivo subido correctamente")
-        else:
-            print_error(response)
-
-    except requests.RequestException:
-        print("Error: no se pudo conectar con el servidor")
+    El endpoint monolitico que usaba escribia el archivo entero en el disco de
+    un peer, y eso dejo de tener sentido cuando el espacio de nombres paso a
+    estar repartido y los datos a ir en bloques.
+    """
+    print("send no esta disponible todavia: llega con la SPEC-05")
 
 
 def receive(current_path: str, filename: str):
-    name = filename.strip()
-
-    if not name:
-        print("Error: el archivo debe tener un nombre")
-        return
-
-    remote_path = build_path(current_path, name)
-    local_file = Path(name)
-
-    if local_file.exists():
-        print(f"Error: ya existe un archivo local llamado '{name}'")
-        return
-
-    temp_file = local_file.with_name(local_file.name + ".part")
-
-    try:
-        response = requests.get(
-            f"{PEER_URL}/files/download",
-            params={"path": remote_path},
-            stream=True
-        )
-
-        if response.status_code != 200:
-            print_error(response)
-            return
-
-        with temp_file.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                handle.write(chunk)
-
-        temp_file.rename(local_file)
-        print("Archivo descargado correctamente")
-
-    except requests.RequestException:
-        print("Error: no se pudo conectar con el servidor")
-        temp_file.unlink(missing_ok=True)
+    """Retirado en la SPEC-04, reconstruido en la SPEC-05."""
+    print("receive no esta disponible todavia: llega con la SPEC-05")
 
 
 def change_directory(current_path: str, target: str) -> str:

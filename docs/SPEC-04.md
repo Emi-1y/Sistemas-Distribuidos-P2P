@@ -540,8 +540,11 @@ la única salida a la red que no es un reenvío sino un abanico, y necesita que
    que lo cubre.
 2. Los trece tests límite de la sección 8 están escritos y pasan.
 3. La suite pasa completa. De los 138 tests actuales se retiran los catorce de
-   `send` y `receive`, porque prueban endpoints que dejan de existir; ninguno de
-   los otros 124 se modifica.
+   `send` y `receive`, porque prueban endpoints que dejan de existir. Se tocan
+   además, y solo, los que hablaban del árbol que esta SPEC elimina:
+   `test_jaulas.py`, que pasa a proteger el par `blocks/` y `metadata/` y pierde
+   el test que subía un archivo, y una afirmación de `test_config.py`. Los 113
+   restantes no cambian ni una línea.
 4. Ningún test de la fase 1 abre un socket ni sustituye nada de `routing`: la
    semántica se prueba entera sobre un peer.
 5. `metadata.py` no importa `routing` ni `httpx`, y `routing.py` no importa

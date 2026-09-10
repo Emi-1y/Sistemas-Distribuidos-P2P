@@ -150,6 +150,13 @@ def drop_bucket(directory: str) -> None:
     deshacer un `mkdir` que se quedó a medias con un comando que ya existe.
     """
     ruta = normalize(directory)
+
+    if ruta == "/":
+        raise HTTPException(
+            status_code=403,
+            detail="No se puede eliminar la raíz del DFS"
+        )
+
     bucket = read_bucket(ruta)
 
     if bucket is None:
@@ -273,6 +280,21 @@ def remove_directory(path: str) -> dict:
 # Archivos
 # ---------------------------------------------------------------------------
 
+def check_allocate(path: str, size: int) -> None:
+    """Los parámetros, antes de normalizar.
+
+    Va antes a propósito: un `path` vacío tiene que dar `400` de parámetros y
+    no el `403` de la normalización, que significa otra cosa. El endpoint la
+    llama para poder enrutar antes de asignar, y `allocate` la llama también,
+    para que no dependa de que alguien se acuerde.
+    """
+    if not (path or "").strip() or not isinstance(size, int) or size < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Parámetros de asignación inválidos"
+        )
+
+
 def allocate(path: str, size: int) -> dict:
     """Reserva la ruta y devuelve el plan de bloques, en estado `pending`.
 
@@ -280,11 +302,7 @@ def allocate(path: str, size: int) -> dict:
     el almacén de bloques acepta lo que le manden sin comprobar si le tocaba,
     así que el hecho solo lo conocerá el cliente, y lo reportará en el commit.
     """
-    if not (path or "").strip() or not isinstance(size, int) or size < 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Parámetros de asignación inválidos"
-        )
+    check_allocate(path, size)
 
     ruta = normalize(path)
     bucket, nombre = _bucket_of_parent(ruta, "El directorio no existe")

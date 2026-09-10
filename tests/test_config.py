@@ -8,7 +8,7 @@ import importlib
 
 import pytest
 
-from server import blocks, config, filesystem
+from server import blocks, config, metadata
 
 
 VARIABLES = (
@@ -64,10 +64,11 @@ def test_la_raiz_de_datos_sale_del_entorno(recargar, tmp_path):
 def test_los_dos_arboles_cuelgan_de_la_raiz_de_config():
     """Cada plano tiene su arbol, y los dos salen de la misma raiz del peer.
 
-    Antes de la SPEC-03 filesystem era duenio de STORAGE_ROOT entero. Ahora hay
-    dos arboles hermanos y ninguno de los dos es la raiz.
+    Antes de la SPEC-03 filesystem era duenio de STORAGE_ROOT entero. La
+    SPEC-04 retiro el arbol del espacio de nombres, asi que los dos que quedan
+    en disco son los bloques y los metadatos.
     """
-    assert filesystem.NAMESPACE_ROOT == config.STORAGE_ROOT / "namespace"
+    assert metadata.METADATA_ROOT == config.STORAGE_ROOT / "metadata"
     assert blocks.BLOCKS_ROOT == config.STORAGE_ROOT / "blocks"
 
 
