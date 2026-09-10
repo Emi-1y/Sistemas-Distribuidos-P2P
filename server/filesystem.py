@@ -1,28 +1,24 @@
+"""La jaula del disco: la unica comprobacion de contencion del sistema.
+
+Aqui vivia el espacio de nombres del usuario, cuando era un arbol de
+directorios reales. La SPEC-04 lo sustituyo por metadatos repartidos, asi que
+lo unico que queda es lo que protege los dos arboles que si estan en disco:
+`blocks/` y `metadata/`.
+"""
+
 from pathlib import Path
+
 from fastapi import HTTPException
-
-from server import config
-
-
-# El espacio de nombres del usuario: un arbol propio, hermano del de bloques.
-# Separados, `cd /blocks` o `rmdir /blocks/<file_id>` dejan de existir como
-# operaciones, en vez de tener que prohibirlas una por una.
-NAMESPACE_ROOT = config.STORAGE_ROOT / "namespace"
-
-MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
-CHUNK_SIZE = 1024 * 1024           # 1 MB
-
-NAMESPACE_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def resolve_path(root: Path, remote_path: str) -> Path:
-    """Resuelve una ruta virtual dentro de `root`, que es su jaula.
+    """Resuelve una ruta dentro de `root`, que es su jaula.
 
     La raiz entra por parametro y sin valor por defecto. Con dos arboles,
-    anclar una sola jaula arriba no serviria: `/../blocks/<file_id>` caeria
-    dentro de esa jaula y pasaria la comprobacion. La jaula tiene que moverse
-    con el plano que protege, y olvidar el argumento tiene que ser un error en
-    el acto y no una caida silenciosa al arbol equivocado.
+    anclar una sola jaula arriba no serviria: una ruta con `..` desde uno
+    caeria dentro de esa jaula comun y aterrizaria en el arbol de al lado. La
+    jaula tiene que moverse con el plano que protege, y olvidar el argumento
+    tiene que ser un error en el acto y no una caida silenciosa.
     """
     clean_path = remote_path.lstrip("/")
     full_path = (root / clean_path).resolve()
@@ -34,177 +30,3 @@ def resolve_path(root: Path, remote_path: str) -> Path:
         )
 
     return full_path
-
-
-def list_directory(remote_path: str):
-    path = resolve_path(NAMESPACE_ROOT, remote_path)
-
-    if not path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="El directorio no existe"
-        )
-
-    if not path.is_dir():
-        raise HTTPException(
-            status_code=400,
-            detail="La ruta no es un directorio"
-        )
-
-    items = []
-
-    for item in path.iterdir():
-        items.append({
-            "name": item.name,
-            "type": "directory" if item.is_dir() else "file",
-            "size": item.stat().st_size if item.is_file() else None
-        })
-
-    return items
-
-
-def create_directory(remote_path: str):
-    path = resolve_path(NAMESPACE_ROOT, remote_path)
-
-    if path.exists():
-        raise HTTPException(
-            status_code=409,
-            detail="El directorio ya existe"
-        )
-
-    path.mkdir(parents=True)
-
-    return {
-        "message": "Directorio creado correctamente",
-        "path": remote_path
-    }
-
-
-def remove_directory(remote_path: str):
-    path = resolve_path(NAMESPACE_ROOT, remote_path)
-
-    if path == NAMESPACE_ROOT:
-        raise HTTPException(
-            status_code=403,
-            detail="No se puede eliminar la raíz del DFS"
-        )
-
-    if not path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="El directorio no existe"
-        )
-
-    if not path.is_dir():
-        raise HTTPException(
-            status_code=400,
-            detail="La ruta no es un directorio"
-        )
-
-    try:
-        path.rmdir()
-    except OSError:
-        raise HTTPException(
-            status_code=400,
-            detail="El directorio no está vacío"
-        )
-
-    return {
-        "message": "Directorio eliminado correctamente"
-    }
-
-
-def save_file(remote_path: str, uploaded_file):
-    filename = (uploaded_file.filename or "").strip()
-
-    if not filename:
-        raise HTTPException(
-            status_code=400,
-            detail="El archivo debe tener un nombre"
-        )
-
-    directory = resolve_path(NAMESPACE_ROOT, remote_path)
-
-    if not directory.is_dir():
-        raise HTTPException(
-            status_code=404,
-            detail="El directorio no existe"
-        )
-
-    virtual_path = f"{remote_path.rstrip('/')}/{filename}"
-    destination = resolve_path(NAMESPACE_ROOT, virtual_path)
-
-    if destination.exists():
-        raise HTTPException(
-            status_code=409,
-            detail="El archivo ya existe"
-        )
-
-    written = 0
-
-    try:
-        with destination.open("wb") as buffer:
-            while True:
-                chunk = uploaded_file.file.read(CHUNK_SIZE)
-
-                if not chunk:
-                    break
-
-                written += len(chunk)
-
-                if written > MAX_FILE_SIZE:
-                    raise HTTPException(
-                        status_code=413,
-                        detail="El archivo supera el tamaño máximo permitido"
-                    )
-
-                buffer.write(chunk)
-
-    except HTTPException:
-        destination.unlink(missing_ok=True)
-        raise
-
-    return {
-        "message": "Archivo subido correctamente",
-        "path": virtual_path
-    }
-
-
-def remove_file(remote_path: str):
-    path = resolve_path(NAMESPACE_ROOT, remote_path)
-
-    if not path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="El archivo no existe"
-        )
-
-    if not path.is_file():
-        raise HTTPException(
-            status_code=400,
-            detail="La ruta no corresponde a un archivo"
-        )
-
-    path.unlink()
-
-    return {
-        "message": "Archivo eliminado correctamente"
-    }
-
-
-def get_file(remote_path: str) -> Path:
-    path = resolve_path(NAMESPACE_ROOT, remote_path)
-
-    if not path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="El archivo no existe"
-        )
-
-    if not path.is_file():
-        raise HTTPException(
-            status_code=400,
-            detail="La ruta no corresponde a un archivo"
-        )
-
-    return path

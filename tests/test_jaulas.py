@@ -1,8 +1,12 @@
-"""Las dos jaulas — SPEC-03, paso 1 del plan TDD.
+"""Las dos jaulas — SPEC-03, actualizado por la SPEC-04.
 
-El espacio de nombres y los bloques son planos separados. La separacion no es
-orden: `ls`, `cd`, `rm` y `rmdir` operan sobre rutas que escribe el usuario, y
-con los dos planos mezclados `rmdir /blocks/<file_id>` borraria bloques.
+Los dos arboles que hay en disco son `blocks/` y `metadata/`, y cada uno es su
+propia jaula. El espacio de nombres del usuario ya no es un tercero: dejo de
+ser un arbol de directorios reales y paso a ser entradas repartidas por el
+anillo, asi que las rutas que escribe el usuario **ya no llegan al disco**.
+
+Eso no hace la frontera innecesaria, la hace mas facil de defender: ningun
+nombre de archivo de metadatos puede aterrizar entre los bloques, ni al reves.
 """
 
 import pytest
@@ -27,28 +31,30 @@ def bloque_en_disco(arboles):
 
 
 # ---------------------------------------------------------------------------
-# AC-13 — ninguna operacion del usuario ve ni toca un bloque
+# Ninguna operacion del usuario ve ni toca un bloque
 # ---------------------------------------------------------------------------
 
 def test_ls_de_la_raiz_no_lista_los_bloques(client, arboles, bloque_en_disco):
-    """AC-13: el plano de datos no aparece en el espacio de nombres."""
-    (arboles.namespace / "universidad").mkdir()
+    """El plano de datos no aparece en el espacio de nombres."""
+    client.post("/directories", json={"path": "/universidad"})
 
     items = client.get("/files", params={"path": "/"}).json()["items"]
 
     assert [item["name"] for item in items] == ["universidad"]
 
 
-def test_no_se_puede_entrar_en_el_arbol_de_bloques(client, bloque_en_disco):
-    """AC-13: `cd /blocks` no existe dentro del espacio de nombres."""
+def test_no_se_puede_entrar_en_el_arbol_de_bloques(client, arboles, bloque_en_disco):
+    """`cd /blocks` no es una ruta del disco: es una clave que nadie ha creado."""
     respuesta = client.get("/files", params={"path": "/blocks"})
 
     assert respuesta.status_code == 404
     assert bloque_en_disco.exists()
 
 
-def test_no_se_puede_borrar_un_directorio_de_bloques(client, bloque_en_disco):
-    """AC-13: con los planos mezclados, este rmdir borraria bloques de verdad."""
+def test_no_se_puede_borrar_un_directorio_de_bloques(
+    client, arboles, bloque_en_disco
+):
+    """Con los planos mezclados, este rmdir borraria bloques de verdad."""
     respuesta = client.delete(
         "/directories", params={"path": f"/blocks/{UUID_DEMO}"}
     )
@@ -57,8 +63,10 @@ def test_no_se_puede_borrar_un_directorio_de_bloques(client, bloque_en_disco):
     assert bloque_en_disco.exists()
 
 
-def test_no_se_puede_borrar_un_bloque_saliendo_por_arriba(client, bloque_en_disco):
-    """AC-13: mover el namespace sin mover la jaula solo anade un `..` al ataque."""
+def test_no_se_puede_borrar_un_bloque_saliendo_por_arriba(
+    client, arboles, bloque_en_disco
+):
+    """Una ruta que sube por encima de la raiz no llega a ser una clave."""
     respuesta = client.delete(
         "/files", params={"path": f"/../blocks/{UUID_DEMO}/000000.blk"}
     )
@@ -68,24 +76,36 @@ def test_no_se_puede_borrar_un_bloque_saliendo_por_arriba(client, bloque_en_disc
     assert bloque_en_disco.exists()
 
 
-def test_no_se_puede_subir_un_archivo_al_arbol_de_bloques(client, bloque_en_disco):
-    """AC-13: tampoco por el camino de escritura."""
-    respuesta = client.post(
-        "/files/upload",
-        data={"path": f"/../blocks/{UUID_DEMO}"},
-        files={"file": ("000001.blk", b"colado")},
-    )
+def test_un_directorio_del_usuario_llamado_blocks_no_toca_nada(
+    client, arboles, bloque_en_disco
+):
+    """La separacion por construccion, en su forma mas clara.
+
+    El usuario puede llamar `/blocks` a un directorio suyo y no pasa nada: su
+    nombre vive en un JSON de metadatos, y el arbol de datos ni se entera.
+    """
+    respuesta = client.post("/directories", json={"path": "/blocks"})
+
+    assert respuesta.status_code == 200
+    assert client.get("/files", params={"path": "/blocks"}).json()["items"] == []
+    assert bloque_en_disco.exists()
+    assert [d.name for d in arboles.blocks.iterdir()] == [UUID_DEMO]
+
+
+def test_la_raiz_no_se_puede_borrar(client, arboles):
+    """Se conserva el mensaje del monolito."""
+    respuesta = client.delete("/directories", params={"path": "/"})
 
     assert respuesta.status_code == 403
-    assert list((bloque_en_disco.parent).iterdir()) == [bloque_en_disco]
+    assert respuesta.json()["detail"] == "No se puede eliminar la raíz del DFS"
 
 
 # ---------------------------------------------------------------------------
-# AC-14 — cada arbol es su propia jaula
+# Cada arbol del disco es su propia jaula
 # ---------------------------------------------------------------------------
 
 def test_resolve_path_exige_la_raiz(arboles):
-    """AC-14: sin valor por defecto.
+    """Sin valor por defecto.
 
     Con dos arboles, olvidar el argumento tiene que ser un error en el acto y
     no una caida silenciosa al arbol equivocado.
@@ -94,9 +114,9 @@ def test_resolve_path_exige_la_raiz(arboles):
         filesystem.resolve_path("/universidad")
 
 
-@pytest.mark.parametrize("arbol", ["namespace", "blocks"])
+@pytest.mark.parametrize("arbol", ["metadata", "blocks"])
 def test_cada_arbol_tiene_su_propia_jaula(arboles, arbol):
-    """AC-14: la misma ruta que se sale responde 403 en los dos."""
+    """La misma ruta que se sale responde 403 en los dos."""
     raiz = getattr(arboles, arbol)
 
     with pytest.raises(HTTPException) as error:
@@ -106,30 +126,21 @@ def test_cada_arbol_tiene_su_propia_jaula(arboles, arbol):
     assert error.value.detail == "Acceso fuera del sistema DFS no permitido"
 
 
-def test_una_ruta_del_namespace_no_alcanza_el_arbol_de_bloques(arboles):
-    """AC-14: es exactamente lo que pasaria con una sola jaula en STORAGE_ROOT.
+def test_una_ruta_de_metadatos_no_alcanza_el_arbol_de_bloques(arboles):
+    """Es exactamente lo que pasaria con una sola jaula en STORAGE_ROOT.
 
-    `namespace/../blocks/<file_id>` cae dentro de STORAGE_ROOT, asi que una
+    `metadata/../blocks/<file_id>` cae dentro de STORAGE_ROOT, asi que una
     jaula anclada arriba lo dejaria pasar.
     """
     with pytest.raises(HTTPException) as error:
-        filesystem.resolve_path(arboles.namespace, f"/../blocks/{UUID_DEMO}")
+        filesystem.resolve_path(arboles.metadata, f"/../blocks/{UUID_DEMO}")
 
     assert error.value.status_code == 403
 
 
-def test_una_ruta_de_bloques_no_alcanza_el_espacio_de_nombres(arboles):
-    """AC-14: la frontera vale en las dos direcciones."""
+def test_una_ruta_de_bloques_no_alcanza_los_metadatos(arboles):
+    """La frontera vale en las dos direcciones."""
     with pytest.raises(HTTPException) as error:
-        filesystem.resolve_path(arboles.blocks, "/../namespace/universidad")
+        filesystem.resolve_path(arboles.blocks, "/../metadata/0000000000000000.json")
 
     assert error.value.status_code == 403
-
-
-def test_la_raiz_del_espacio_de_nombres_sigue_sin_poder_borrarse(client, arboles):
-    """El 403 de remove_directory ahora compara contra NAMESPACE_ROOT."""
-    respuesta = client.delete("/directories", params={"path": "/"})
-
-    assert respuesta.status_code == 403
-    assert respuesta.json()["detail"] == "No se puede eliminar la raíz del DFS"
-    assert arboles.namespace.is_dir()
