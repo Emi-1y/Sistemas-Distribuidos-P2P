@@ -4,21 +4,30 @@ from fastapi import HTTPException
 from server import config
 
 
-# La raiz de datos de este peer. Sale de config para que tres peers en la misma
-# maquina no se pisen los bloques; resolve_path no cambia.
-STORAGE_ROOT = config.STORAGE_ROOT
+# El espacio de nombres del usuario: un arbol propio, hermano del de bloques.
+# Separados, `cd /blocks` o `rmdir /blocks/<file_id>` dejan de existir como
+# operaciones, en vez de tener que prohibirlas una por una.
+NAMESPACE_ROOT = config.STORAGE_ROOT / "namespace"
 
 MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
 CHUNK_SIZE = 1024 * 1024           # 1 MB
 
-STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+NAMESPACE_ROOT.mkdir(parents=True, exist_ok=True)
 
 
-def resolve_path(remote_path: str) -> Path:
+def resolve_path(root: Path, remote_path: str) -> Path:
+    """Resuelve una ruta virtual dentro de `root`, que es su jaula.
+
+    La raiz entra por parametro y sin valor por defecto. Con dos arboles,
+    anclar una sola jaula arriba no serviria: `/../blocks/<file_id>` caeria
+    dentro de esa jaula y pasaria la comprobacion. La jaula tiene que moverse
+    con el plano que protege, y olvidar el argumento tiene que ser un error en
+    el acto y no una caida silenciosa al arbol equivocado.
+    """
     clean_path = remote_path.lstrip("/")
-    full_path = (STORAGE_ROOT / clean_path).resolve()
+    full_path = (root / clean_path).resolve()
 
-    if full_path != STORAGE_ROOT and STORAGE_ROOT not in full_path.parents:
+    if full_path != root and root not in full_path.parents:
         raise HTTPException(
             status_code=403,
             detail="Acceso fuera del sistema DFS no permitido"
@@ -28,7 +37,7 @@ def resolve_path(remote_path: str) -> Path:
 
 
 def list_directory(remote_path: str):
-    path = resolve_path(remote_path)
+    path = resolve_path(NAMESPACE_ROOT, remote_path)
 
     if not path.exists():
         raise HTTPException(
@@ -55,7 +64,7 @@ def list_directory(remote_path: str):
 
 
 def create_directory(remote_path: str):
-    path = resolve_path(remote_path)
+    path = resolve_path(NAMESPACE_ROOT, remote_path)
 
     if path.exists():
         raise HTTPException(
@@ -72,9 +81,9 @@ def create_directory(remote_path: str):
 
 
 def remove_directory(remote_path: str):
-    path = resolve_path(remote_path)
+    path = resolve_path(NAMESPACE_ROOT, remote_path)
 
-    if path == STORAGE_ROOT:
+    if path == NAMESPACE_ROOT:
         raise HTTPException(
             status_code=403,
             detail="No se puede eliminar la raíz del DFS"
@@ -114,7 +123,7 @@ def save_file(remote_path: str, uploaded_file):
             detail="El archivo debe tener un nombre"
         )
 
-    directory = resolve_path(remote_path)
+    directory = resolve_path(NAMESPACE_ROOT, remote_path)
 
     if not directory.is_dir():
         raise HTTPException(
@@ -123,7 +132,7 @@ def save_file(remote_path: str, uploaded_file):
         )
 
     virtual_path = f"{remote_path.rstrip('/')}/{filename}"
-    destination = resolve_path(virtual_path)
+    destination = resolve_path(NAMESPACE_ROOT, virtual_path)
 
     if destination.exists():
         raise HTTPException(
@@ -162,7 +171,7 @@ def save_file(remote_path: str, uploaded_file):
 
 
 def remove_file(remote_path: str):
-    path = resolve_path(remote_path)
+    path = resolve_path(NAMESPACE_ROOT, remote_path)
 
     if not path.exists():
         raise HTTPException(
@@ -184,7 +193,7 @@ def remove_file(remote_path: str):
 
 
 def get_file(remote_path: str) -> Path:
-    path = resolve_path(remote_path)
+    path = resolve_path(NAMESPACE_ROOT, remote_path)
 
     if not path.exists():
         raise HTTPException(

@@ -8,7 +8,7 @@ import importlib
 
 import pytest
 
-from server import config, filesystem
+from server import blocks, config, filesystem
 
 
 VARIABLES = (
@@ -61,12 +61,14 @@ def test_la_raiz_de_datos_sale_del_entorno(recargar, tmp_path):
     assert recargado.STORAGE_ROOT == destino.resolve()
 
 
-def test_filesystem_toma_su_raiz_de_config():
-    """resolve_path no cambia: solo cambia de donde viene STORAGE_ROOT.
+def test_los_dos_arboles_cuelgan_de_la_raiz_de_config():
+    """Cada plano tiene su arbol, y los dos salen de la misma raiz del peer.
 
-    Es lo que mantiene verdes los 14 tests del hito 1 sin tocarlos.
+    Antes de la SPEC-03 filesystem era duenio de STORAGE_ROOT entero. Ahora hay
+    dos arboles hermanos y ninguno de los dos es la raiz.
     """
-    assert filesystem.STORAGE_ROOT == config.STORAGE_ROOT
+    assert filesystem.NAMESPACE_ROOT == config.STORAGE_ROOT / "namespace"
+    assert blocks.BLOCKS_ROOT == config.STORAGE_ROOT / "blocks"
 
 
 def test_el_bootstrap_se_lee_como_pares_de_identidad_y_direccion(recargar):
