@@ -1,10 +1,10 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, Form, Header
+from fastapi import FastAPI, UploadFile, File, Form, Header, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from server import config, membership, ring
+from server import blocks, config, membership, ring
 from server.filesystem import (
     list_directory,
     create_directory,
@@ -75,6 +75,49 @@ def join(
         request.address,
         forwarded=x_forwarded_by is not None
     )
+
+
+def declared_size(request: Request) -> int | None:
+    """El Content-Length, o None si no vino o no es un numero."""
+    value = request.headers.get("content-length")
+
+    return int(value) if value is not None and value.isdigit() else None
+
+
+@app.put("/blocks/{file_id}/{index}", status_code=201)
+async def put_block(
+    file_id: str,
+    index: str,
+    request: Request,
+    x_block_checksum: str | None = Header(default=None)
+):
+    identifier, number = blocks.parse_identifiers(file_id, index)
+    checksum = blocks.parse_checksum(x_block_checksum)
+
+    return await blocks.save_block(
+        identifier,
+        number,
+        request.stream(),
+        checksum,
+        declared_size=declared_size(request)
+    )
+
+
+@app.get("/blocks/{file_id}/{index}")
+def get_block(file_id: str, index: str):
+    identifier, number = blocks.parse_identifiers(file_id, index)
+    path, checksum = blocks.read_block(identifier, number)
+
+    return FileResponse(
+        path=path,
+        media_type="application/octet-stream",
+        headers={"X-Block-Checksum": checksum}
+    )
+
+
+@app.delete("/blocks/{file_id}")
+def delete_block(file_id: str):
+    return blocks.delete_blocks(blocks.parse_file_id(file_id))
 
 
 @app.get("/files")
