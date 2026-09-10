@@ -113,6 +113,19 @@ leer. Casi todas las decisiones de abajo existen para blindar esa propiedad.
   está dirigida a un dueño, así que reenviarla de más no rompe nada, solo
   desperdicia.
 
+- **El peer que no aparece en su propio bootstrap se anuncia al arrancar y
+  absorbe la membresía que recibe.** Es la otra mitad de `POST /peers/join`, y
+  sin ella el alta funciona a medias: los demás aprenden del recién llegado,
+  pero nadie le enseña a él quiénes son. Un peer con un anillo de un solo nodo
+  no se queda simplemente incompleto — **se cree dueño de todas las claves**,
+  acepta bloques que ningún otro peer sabe que tiene y los entierra donde nadie
+  los va a buscar. La respuesta de `/peers/join` ya trae la membresía entera,
+  así que absorberla no cuesta ni una petición extra. El anuncio es
+  condicional: un peer que sí figura en su propio bootstrap **no habla con
+  nadie**, que es lo que permite que los tres de la demo arranquen a la vez sin
+  depender del orden. La regla en una frase: un peer usa la red solo cuando su
+  configuración no le basta para conocer el anillo.
+
 - **`ring_version` se deriva de la membresía: es el hash de la lista de
   `peer_id` ordenada, en hexadecimal corto.** No es un contador ni un reloj
   lógico, y la diferencia es justo la que hace falta: dos peers con el mismo
@@ -166,6 +179,8 @@ leer. Casi todas las decisiones de abajo existen para blindar esa propiedad.
   `choose_nodes`, `address_of`, alta de peers y `ring_version`.
 - Los endpoints `GET /health`, `GET /ring` y `POST /peers/join`.
 - La propagación de una ronda del alta a los peers conocidos.
+- El anuncio al arrancar del peer que no figura en su propio bootstrap, y la
+  absorción de la membresía que recibe.
 - El cliente pasa de `SERVER_URL` fijo a una lista de bootstrap.
 - `.env.example` con los tres peers de la demo.
 
@@ -296,8 +311,19 @@ direcciones se desincronizaron, es decir, un fallo de invariante nuestro.
 
 ```python
 def join(peer_id: str, address: str, forwarded: bool) -> dict: ...
-def _send_join(target: str, payload: dict, headers: dict) -> None: ...
+def announce() -> bool: ...                  # al arrancar; True si aprendió algo
+def absorb(cuerpo: dict | None) -> bool: ...  # mete una membresía ajena en LOCAL
+def _send_join(target: str, payload: dict, headers: dict) -> dict | None: ...
 ```
+
+`announce` no hace nada si el bootstrap está vacío o si este peer figura en él.
+En caso contrario recorre el bootstrap, se da de alta en **el primero que
+responda** y absorbe su respuesta. Va **sin** `X-Forwarded-By`: el anuncio tiene
+que propagarse a los demás, y marcarlo lo impediría.
+
+`_send_join` devuelve el cuerpo de la respuesta, o `None` si el peer no
+contestó. Es lo que permite absorber; la propagación lo ignora, porque quien
+propaga ya conoce más que quien recibe.
 
 `ring.py` no habla por red: es lo que permite probarlo sin levantar nada. La
 validación que devuelve `400` y `409` y la propagación de una ronda viven en un
@@ -336,6 +362,7 @@ cambian de cara para el usuario.
 | **AC-12** | **Dado** un peer que recibe un alta nueva **cuando** la aplica **entonces** la reenvía con `X-Forwarded-By` a los peers que conoce, y un alta que ya trae esa cabecera se aplica pero no se reenvía |
 | **AC-13** | **Dado** un `peer_id` presente en el anillo **cuando** se llama a `address_of` **entonces** devuelve su dirección normalizada, y ante un `peer_id` ausente levanta `KeyError` |
 | **AC-14** | **Dadas** dos membresías **cuando** se comparan sus `ring_version` **entonces** coinciden si y solo si coincide el conjunto de `peer_id`, sin que influyan las direcciones ni el orden de alta |
+| **AC-15** | **Dado** un peer arrancado con un bootstrap en el que él **no** aparece **cuando** se anuncia **entonces** se da de alta en el primero que responda, absorbe la membresía recibida y su `ring_version` coincide con la de los demás; y **dado** un peer que sí aparece en su propio bootstrap, no habla con nadie al arrancar |
 
 ---
 
@@ -393,6 +420,12 @@ muta estado. El caso feliz antes que los errores, como en la SPEC-01.
 por red y necesita sustituir el cliente HTTP por un doble que registre a quién
 se llamó y con qué cabeceras.
 
+**Paso 8 — El anuncio del peer nuevo** → AC-15. Va el último porque necesita
+todo lo anterior: el anillo, el alta y la propagación. Se prueba llamando a
+`announce()` con `_send_join` sustituido, sin levantar nada. Cubre las dos
+mitades: el peer que no está en su bootstrap se anuncia y converge, y el que sí
+está no emite ni una petición.
+
 ---
 
 ## 8. Tests límite
@@ -408,6 +441,8 @@ se llamó y con qué cabeceras.
 | Alta de un peer consigo mismo | `200`, `ring_version` no cambia | El peer ya está en su propio anillo desde el arranque |
 | `address` con esquema `ftp://` o texto suelto | `400 Dirección de peer inválida` | Una dirección inválida en el anillo produce fallos de red mucho más tarde y lejos de su causa |
 | `DFSHA_BOOTSTRAP` con espacios, entradas vacías o coma final | Se ignoran las entradas vacías | Es una variable escrita a mano en un `docker-compose` |
+| El primer peer del bootstrap no contesta al anuncio | Se prueba con el siguiente | Anunciarse a uno solo lo convertiría en un punto único de fallo justo al arrancar |
+| Ningún peer del bootstrap contesta al anuncio | El anillo queda como estaba | El peer arranca aislado; reintentar es hito 3 |
 | `DFSHA_VNODES=1` | Funciona, reparte peor | Demuestra que los nodos virtuales son un parámetro, no una condición de correctitud |
 
 ---
@@ -431,17 +466,20 @@ se llamó y con qué cabeceras.
 8. Añadir `client/__init__.py` y borrar los imports muertos de
    `server/main.py`, que son deuda técnica que estorba en los archivos que esta
    SPEC toca.
-9. Escribir `.env.example` con los tres peers de los puertos 9001-9003.
-10. Escribir `tests/test_config.py`, `tests/test_ring.py` y
-    `tests/test_membership.py` siguiendo el plan del punto 7.
+9. Añadir `announce()` y `absorb()` a `server/membership.py` y llamarlos desde
+   el arranque de la aplicación.
+10. Escribir `.env.example` con los tres peers de los puertos 9001-9003.
+11. Escribir `tests/test_config.py`, `tests/test_ring.py`,
+    `tests/test_membership.py` y `tests/test_client_bootstrap.py` siguiendo el
+    plan del punto 7.
 
 ---
 
 ## 10. Definición de Done
 
-1. Cada uno de los catorce criterios de aceptación tiene al menos un test que
+1. Cada uno de los quince criterios de aceptación tiene al menos un test que
    lo cubre.
-2. Los diez tests límite de la sección 8 están escritos y pasan.
+2. Los doce tests límite de la sección 8 están escritos y pasan.
 3. La suite pasa completa, incluidos los 14 tests que ya existían, **sin haber
    modificado ninguno de ellos**.
 4. En ningún módulo se llama a `hash()` sobre una cadena que influya en la
@@ -454,6 +492,7 @@ se llamó y con qué cabeceras.
    cliente.
 8. Tres peers arrancados a mano en los puertos 9001-9003 con el mismo bootstrap
    devuelven, en `GET /ring`, la misma membresía, y `choose_nodes` sobre la misma
-   clave da el mismo dueño en los tres.
+   clave da el mismo dueño en los tres. Un cuarto peer que se anuncia converge
+   con ellos: los cuatro `ring_version` coinciden.
 9. No existe ningún endpoint ni función de bloques, metadatos o replicación.
 10. Ningún archivo de producción fue escrito antes que su test.

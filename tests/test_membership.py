@@ -243,3 +243,167 @@ def test_un_peer_que_se_da_de_alta_a_si_mismo_no_cambia_nada(
     assert respuesta.status_code == 200
     assert respuesta.json()["ring_version"] == version_previa
     assert enviados == []
+
+
+# ---------------------------------------------------------------------------
+# Paso 8 — el anuncio del peer nuevo (AC-15)
+# ---------------------------------------------------------------------------
+
+MEMBRESIA_COMPLETA = {
+    "ring_version": "irrelevante",
+    "peers": [
+        {"peer_id": "peer1", "address": "http://peer1:9001"},
+        {"peer_id": "peer2", "address": "http://peer2:9002"},
+        {"peer_id": "peer3", "address": "http://peer3:9003"},
+        {"peer_id": "peer4", "address": "http://peer4:9004"},
+    ],
+}
+
+
+@pytest.fixture
+def peer_recien_llegado(monkeypatch):
+    """peer4: se conoce solo a si mismo y su bootstrap no lo incluye."""
+    local = Ring()
+    local.add_peer("peer4", "http://peer4:9004")
+
+    monkeypatch.setattr(ring, "LOCAL", local)
+    monkeypatch.setattr(config, "PEER_ID", "peer4")
+    monkeypatch.setattr(config, "ADDRESS", "http://peer4:9004")
+    monkeypatch.setattr(config, "BOOTSTRAP", BOOTSTRAP)
+
+    return local
+
+
+def test_el_peer_nuevo_se_anuncia_y_absorbe_la_membresia(
+    monkeypatch, peer_recien_llegado
+):
+    """AC-15: un anillo de un solo nodo se cree dueno de todas las claves.
+
+    Sin absorber, peer4 aceptaria bloques que ningun otro peer sabe que tiene.
+    """
+    llamadas = []
+
+    def falso(target, payload, headers):
+        llamadas.append((target, payload, headers))
+        return MEMBRESIA_COMPLETA
+
+    monkeypatch.setattr(membership, "_send_join", falso)
+
+    assert membership.announce() is True
+
+    # Convergio con los demas.
+    referencia = Ring()
+    for peer in MEMBRESIA_COMPLETA["peers"]:
+        referencia.add_peer(peer["peer_id"], peer["address"])
+
+    assert peer_recien_llegado.version() == referencia.version()
+    assert [p["peer_id"] for p in peer_recien_llegado.peers()] == [
+        "peer1",
+        "peer2",
+        "peer3",
+        "peer4",
+    ]
+
+
+def test_el_anuncio_va_sin_la_cabecera_de_reenvio(monkeypatch, peer_recien_llegado):
+    """AC-15: marcarlo impediria que el receptor lo propague a los demas."""
+    llamadas = []
+
+    def falso(target, payload, headers):
+        llamadas.append((target, payload, headers))
+        return MEMBRESIA_COMPLETA
+
+    monkeypatch.setattr(membership, "_send_join", falso)
+    membership.announce()
+
+    target, payload, headers = llamadas[0]
+
+    assert target == "http://peer1:9001"
+    assert payload == {"peer_id": "peer4", "address": "http://peer4:9004"}
+    assert "X-Forwarded-By" not in headers
+
+
+def test_el_anuncio_se_para_en_el_primero_que_responde(
+    monkeypatch, peer_recien_llegado
+):
+    """Basta uno: todos los peers publican la misma membresia."""
+    llamadas = []
+
+    def falso(target, payload, headers):
+        llamadas.append(target)
+        return MEMBRESIA_COMPLETA
+
+    monkeypatch.setattr(membership, "_send_join", falso)
+    membership.announce()
+
+    assert llamadas == ["http://peer1:9001"]
+
+
+def test_el_anuncio_prueba_con_el_siguiente_si_el_primero_no_contesta(
+    monkeypatch, peer_recien_llegado
+):
+    """Anunciarse a uno solo seria un punto unico de fallo al arrancar."""
+    llamadas = []
+
+    def falso(target, payload, headers):
+        llamadas.append(target)
+
+        if target == "http://peer1:9001":
+            return None
+
+        return MEMBRESIA_COMPLETA
+
+    monkeypatch.setattr(membership, "_send_join", falso)
+
+    assert membership.announce() is True
+    assert llamadas == ["http://peer1:9001", "http://peer2:9002"]
+
+
+def test_si_no_contesta_nadie_el_anillo_queda_como_estaba(
+    monkeypatch, peer_recien_llegado
+):
+    """El peer arranca aislado. Reintentar y reconciliar es hito 3."""
+    version_previa = peer_recien_llegado.version()
+
+    monkeypatch.setattr(
+        membership, "_send_join", lambda target, payload, headers: None
+    )
+
+    assert membership.announce() is False
+    assert peer_recien_llegado.version() == version_previa
+
+
+def test_un_peer_que_esta_en_su_bootstrap_no_habla_con_nadie(
+    monkeypatch, anillo_de_tres
+):
+    """AC-15, la otra mitad: es lo que permite arrancar los tres a la vez.
+
+    Si el arranque dependiera de que otro peer responda, el orden de arranque
+    decidiria si el sistema funciona.
+    """
+    monkeypatch.setattr(config, "BOOTSTRAP", BOOTSTRAP)
+
+    llamadas = []
+    monkeypatch.setattr(
+        membership,
+        "_send_join",
+        lambda target, payload, headers: llamadas.append(target),
+    )
+
+    assert membership.announce() is False
+    assert llamadas == []
+
+
+def test_sin_bootstrap_no_hay_a_quien_anunciarse(monkeypatch, anillo_local):
+    """El peer por defecto del hito 1 arranca solo, como siempre."""
+    monkeypatch.setattr(config, "BOOTSTRAP", [])
+
+    llamadas = []
+    monkeypatch.setattr(
+        membership,
+        "_send_join",
+        lambda target, payload, headers: llamadas.append(target),
+    )
+
+    assert membership.announce() is False
+    assert llamadas == []

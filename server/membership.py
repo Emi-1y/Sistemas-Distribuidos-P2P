@@ -59,17 +59,66 @@ def _propagate(peer_id: str, address: str) -> None:
         _send_join(peer["address"], payload, headers)
 
 
-def _send_join(target: str, payload: dict, headers: dict) -> None:
-    """Best-effort: si un peer no contesta, se queda con una membresía vieja.
+def announce() -> bool:
+    """Se presenta a los peers del bootstrap y absorbe su membresía.
 
+    Solo si este peer NO figura en su propio bootstrap. Un peer que sí figura no
+    habla con nadie al arrancar, y eso es lo que permite levantar los tres de la
+    demo a la vez sin que el orden de arranque decida si el sistema funciona.
+
+    Sin esto el alta funcionaría a medias: los demás aprenderían del recién
+    llegado, pero él seguiría con un anillo de un solo nodo — creyéndose dueño
+    de todas las claves y aceptando bloques que ningún otro peer sabe que tiene.
+
+    Va sin `X-Forwarded-By`: el anuncio tiene que propagarse a los demás, y
+    marcarlo lo impediría.
+    """
+    conocidos = {peer_id for peer_id, _ in config.BOOTSTRAP}
+
+    if not config.BOOTSTRAP or config.PEER_ID in conocidos:
+        return False
+
+    payload = {"peer_id": config.PEER_ID, "address": config.ADDRESS}
+
+    for _, address in config.BOOTSTRAP:
+        if absorb(_send_join(address, payload, {})):
+            return True
+
+    return False
+
+
+def absorb(cuerpo: dict | None) -> bool:
+    """Mete en el anillo local la membresía que publicó otro peer."""
+    if not cuerpo:
+        return False
+
+    cambio = False
+
+    for peer in cuerpo.get("peers", []):
+        if ring.LOCAL.add_peer(peer["peer_id"], peer["address"]):
+            cambio = True
+
+    return cambio
+
+
+def _send_join(target: str, payload: dict, headers: dict) -> dict | None:
+    """El cuerpo de la respuesta, o None si el peer no contestó.
+
+    Best-effort: si un peer no contesta, se queda con una membresía vieja.
     Reintentar y reconciliar anillos divergentes es hito 3.
     """
     try:
-        httpx.post(
+        respuesta = httpx.post(
             f"{target}/peers/join",
             json=payload,
             headers=headers,
             timeout=TIMEOUT
         )
+
+        if respuesta.status_code == 200:
+            return respuesta.json()
+
     except httpx.HTTPError:
         pass
+
+    return None
