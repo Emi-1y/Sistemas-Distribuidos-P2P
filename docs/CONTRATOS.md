@@ -75,7 +75,8 @@ Request → cuerpo binario. Cabecera `X-Block-Checksum: <sha256>`.
 
 | Código | Cuándo | Detalle |
 |---|---|---|
-| `400` | `index` negativo o `file_id` que no es UUID | `Identificador de bloque inválido` |
+| `400` | `index` no es un entero mayor o igual que 0, o `file_id` no es un UUID | `Identificador de bloque inválido` |
+| `400` | Falta `X-Block-Checksum`, o no es un SHA-256 hexadecimal | `Checksum de bloque inválido` |
 | `409` | Ese bloque ya existe | `El bloque ya existe` |
 | `413` | El bloque supera `DFSHA_BLOCK_SIZE` | `El bloque supera el tamaño máximo permitido` |
 | `422` | El checksum recibido no coincide con lo escrito | `El checksum del bloque no coincide` |
@@ -88,15 +89,47 @@ escrito antes de responder — no quedan bloques corruptos.
 
 | Código | Cuándo | Detalle |
 |---|---|---|
+| `400` | `index` no es un entero mayor o igual que 0, o `file_id` no es un UUID | `Identificador de bloque inválido` |
 | `404` | No existe ese bloque en este peer | `El bloque no existe` |
 
 ### `DELETE /blocks/{file_id}`
-Borra el directorio completo del archivo en este peer. Idempotente.
+Borra el directorio completo del archivo en este peer. Idempotente: si no
+tiene ningún bloque de ese archivo responde `200` con `"deleted": 0`, no `404`.
+El borrado de un archivo se lanza a varios peers a la vez y muchos de ellos no
+tendrán nada; «no tengo nada» es una respuesta, no un fallo.
+
 `200` → `{"file_id": "...", "deleted": 3}`
 
+| Código | Cuándo | Detalle |
+|---|---|---|
+| `400` | `file_id` no es un UUID | `Identificador de bloque inválido` |
+
 ### Layout en disco
-`storage/<file_id>/<index:06d>.blk`, dentro de `STORAGE_ROOT`, resuelto con
-`resolve_path`. Sin excepción: es la única jaula del sistema.
+Cada peer guarda **dos árboles separados** bajo `STORAGE_ROOT`:
+
+| Árbol | Qué guarda | Quién lo escribe |
+|---|---|---|
+| `STORAGE_ROOT/blocks/<file_id>/<index:06d>.blk` | Los bloques | SPEC-03 |
+| `STORAGE_ROOT/namespace/...` | El espacio de nombres del usuario | SPEC-01, hasta que la SPEC-04 lo sustituya por metadatos |
+
+La separación no es orden, es una frontera. `ls`, `cd`, `rm` y `rmdir` operan
+sobre rutas que escribe el usuario: con los dos planos mezclados, `cd /blocks`
+o `rmdir /blocks/<file_id>` serían operaciones perfectamente legales. Separados,
+eso queda cerrado por construcción y no por validación.
+
+Toda ruta, de cualquiera de los dos árboles, se resuelve con `resolve_path`,
+que **recibe la raíz como parámetro**:
+
+```python
+def resolve_path(root: Path, remote_path: str) -> Path: ...
+```
+
+Anclar una única jaula en `STORAGE_ROOT` no basta: con el espacio de nombres en
+`STORAGE_ROOT/namespace/`, la ruta `/../blocks/<file_id>` cae **dentro** de
+`STORAGE_ROOT` y pasaría la comprobación. La jaula tiene que moverse con el
+plano que protege, y como hay dos planos hacen falta dos raíces. Sigue siendo
+la única jaula del sistema: no existe ninguna segunda comprobación de
+contención en ningún otro sitio.
 
 ## Metadatos — SPEC-04
 
