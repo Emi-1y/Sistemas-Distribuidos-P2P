@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, UploadFile, File, Form, Header
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -13,10 +15,19 @@ from server.filesystem import (
 )
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Un peer que no figura en su propio bootstrap se presenta y absorbe la
+    # membresía. El que sí figura no emite ninguna petición.
+    membership.announce()
+    yield
+
+
 app = FastAPI(
-    title="DFSha Server",
-    description="Servidor monolítico del sistema de archivos DFSha",
-    version="0.1.0"
+    title="DFSha Peer",
+    description="Peer del sistema de archivos distribuido DFSha",
+    version="0.2.0",
+    lifespan=lifespan
 )
 
 
