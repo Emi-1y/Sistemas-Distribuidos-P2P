@@ -1,10 +1,59 @@
+import os
 import posixpath
 from pathlib import Path
 
 import requests
 
 
-SERVER_URL = "http://127.0.0.1:8000"
+DEFAULT_PEER = "http://127.0.0.1:8000"
+HEALTH_TIMEOUT = 2
+
+# El peer con el que se esta hablando. Lo fija connect() al arrancar el REPL.
+PEER_URL = None
+
+
+def bootstrap_addresses():
+    """Las direcciones de DFSHA_BOOTSTRAP, en orden.
+
+    Se lee el mismo formato que en el servidor, `peer_id=url`, y se descarta el
+    peer_id: el cliente no calcula el anillo, lo consulta. Una sola variable
+    evita que un docker-compose mantenga dos listas que dicen lo mismo.
+    """
+    direcciones = []
+
+    for trozo in os.environ.get("DFSHA_BOOTSTRAP", "").split(","):
+        _, _, address = trozo.rpartition("=")
+        address = address.strip().rstrip("/")
+
+        if address:
+            direcciones.append(address)
+
+    return direcciones or [DEFAULT_PEER]
+
+
+def connect():
+    """El primer peer del bootstrap que responda /health, o None.
+
+    Todos los peers son simetricos: vale cualquiera que este vivo. Conocer uno
+    solo seria un punto unico de fallo.
+    """
+    global PEER_URL
+
+    for address in bootstrap_addresses():
+        try:
+            respuesta = requests.get(
+                f"{address}/health",
+                timeout=HEALTH_TIMEOUT
+            )
+
+            if respuesta.status_code == 200:
+                PEER_URL = address
+                return address
+
+        except requests.RequestException:
+            continue
+
+    return None
 
 
 def build_path(current_path: str, target: str) -> str:
@@ -33,7 +82,7 @@ def print_error(response):
 def ls(current_path: str):
     try:
         response = requests.get(
-            f"{SERVER_URL}/files",
+            f"{PEER_URL}/files",
             params={"path": current_path}
         )
 
@@ -63,7 +112,7 @@ def mkdir(current_path: str, name: str):
 
     try:
         response = requests.post(
-            f"{SERVER_URL}/directories",
+            f"{PEER_URL}/directories",
             json={"path": path}
         )
 
@@ -81,7 +130,7 @@ def rmdir(current_path: str, name: str):
 
     try:
         response = requests.delete(
-            f"{SERVER_URL}/directories",
+            f"{PEER_URL}/directories",
             params={"path": path}
         )
 
@@ -99,7 +148,7 @@ def rm(current_path: str, name: str):
 
     try:
         response = requests.delete(
-            f"{SERVER_URL}/files",
+            f"{PEER_URL}/files",
             params={"path": path}
         )
 
@@ -128,7 +177,7 @@ def send(current_path: str, filename: str):
     try:
         with local_file.open("rb") as handle:
             response = requests.post(
-                f"{SERVER_URL}/files/upload",
+                f"{PEER_URL}/files/upload",
                 data={"path": current_path},
                 files={"file": (local_file.name, handle)}
             )
@@ -160,7 +209,7 @@ def receive(current_path: str, filename: str):
 
     try:
         response = requests.get(
-            f"{SERVER_URL}/files/download",
+            f"{PEER_URL}/files/download",
             params={"path": remote_path},
             stream=True
         )
@@ -186,7 +235,7 @@ def change_directory(current_path: str, target: str) -> str:
 
     try:
         response = requests.get(
-            f"{SERVER_URL}/files",
+            f"{PEER_URL}/files",
             params={"path": new_path}
         )
 

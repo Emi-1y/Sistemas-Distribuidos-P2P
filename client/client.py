@@ -7,7 +7,8 @@ from client.commands import (
     rm,
     send,
     receive,
-    change_directory
+    change_directory,
+    connect
 )
 
 
@@ -17,6 +18,14 @@ def main():
     print("=" * 40)
     print("          DFSha Client")
     print("=" * 40)
+
+    peer = connect()
+
+    if peer is None:
+        print("No respondio ningun peer del bootstrap.")
+        return
+
+    print(f"Conectado a {peer}")
     print()
 
     while True:
