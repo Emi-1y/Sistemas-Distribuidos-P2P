@@ -1,9 +1,12 @@
 from pathlib import Path
 from fastapi import HTTPException
 
+from server import config
 
-BASE_DIR = Path(__file__).resolve().parent
-STORAGE_ROOT = (BASE_DIR / "storage").resolve()
+
+# La raiz de datos de este peer. Sale de config para que tres peers en la misma
+# maquina no se pisen los bloques; resolve_path no cambia.
+STORAGE_ROOT = config.STORAGE_ROOT
 
 MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
 CHUNK_SIZE = 1024 * 1024           # 1 MB
