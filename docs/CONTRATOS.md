@@ -61,11 +61,27 @@ Claves:
 | La entrada de metadatos de `/dir/archivo` | `"/dir"` — el **directorio padre** |
 | La entrada del propio directorio `/a/b` | `"/a"` — también su padre |
 
-El dueño de un directorio guarda las entradas de todo lo que cuelga
-directamente de él. Por eso `allocate` comprueba el padre y la colisión de
-nombre sin salir del peer, y `ls` es una sola llamada a un solo dueño, no un
-barrido de los N peers. Los bytes siguen repartidos bloque a bloque: el
+El dueño de un directorio guarda **su contenido**: las entradas de todo lo que
+cuelga directamente de él. Por eso `ls` es una sola llamada a un solo dueño y no
+un barrido de los N peers. Los bytes siguen repartidos bloque a bloque: el
 metadato es lo único que se agrupa por directorio, y es lo que menos pesa.
+
+**La existencia de un directorio se registra dos veces**, en dos peers
+distintos y por dos motivos distintos:
+
+| Dónde | Qué es | Para qué |
+|---|---|---|
+| En el contenido de su **padre** | una entrada hija `{"name": "universidad", "type": "directory"}` | que aparezca en el `ls` del padre, y que el nombre quede ocupado |
+| En su **propio** dueño | su contenido, aunque esté vacío | que sus hijos sepan que existe sin preguntar a nadie |
+
+Sin la segunda, `allocate /universidad/tarea.pdf` no podría comprobar que
+`/universidad` existe: esa entrada vive en el dueño de `/`, que es otro peer.
+Con ella, el dueño de `/universidad` resuelve las dos comprobaciones —que el
+padre existe y que el nombre está libre— sin salir del peer, y `allocate`, que
+es el camino caliente, no gasta ni una llamada de red.
+
+El precio lo paga `mkdir`, que escribe en dos peers, y `rmdir`, que borra en
+dos. Son operaciones raras; `allocate` ocurre una vez por archivo subido.
 
 ## Bloques — SPEC-03
 
@@ -110,12 +126,19 @@ Cada peer guarda **dos árboles separados** bajo `STORAGE_ROOT`:
 | Árbol | Qué guarda | Quién lo escribe |
 |---|---|---|
 | `STORAGE_ROOT/blocks/<file_id>/<index:06d>.blk` | Los bloques | SPEC-03 |
-| `STORAGE_ROOT/namespace/...` | El espacio de nombres del usuario | SPEC-01, hasta que la SPEC-04 lo sustituya por metadatos |
+| `STORAGE_ROOT/metadata/<hash de la ruta>.json` | El contenido de los directorios cuya clave le toca | SPEC-04 |
 
-La separación no es orden, es una frontera. `ls`, `cd`, `rm` y `rmdir` operan
-sobre rutas que escribe el usuario: con los dos planos mezclados, `cd /blocks`
-o `rmdir /blocks/<file_id>` serían operaciones perfectamente legales. Separados,
-eso queda cerrado por construcción y no por validación.
+El árbol `STORAGE_ROOT/namespace/`, que hasta la SPEC-03 guardaba directorios y
+archivos reales, **desaparece con la SPEC-04**: el espacio de nombres deja de
+ser un sistema de archivos y pasa a ser un conjunto de entradas repartidas por
+el anillo.
+
+La separación no es orden, es una frontera. Mientras el espacio de nombres fue
+un árbol real, mezclarlo con los bloques habría hecho de `cd /blocks` y
+`rmdir /blocks/<file_id>` operaciones perfectamente legales. Hoy las rutas del
+usuario ya no llegan al disco —son claves del anillo— y la frontera sigue
+sirviendo para lo mismo: ningún nombre de archivo de metadatos puede aterrizar
+entre los bloques, ni al revés.
 
 Toda ruta, de cualquiera de los dos árboles, se resuelve con `resolve_path`,
 que **recibe la raíz como parámetro**:
@@ -124,12 +147,15 @@ que **recibe la raíz como parámetro**:
 def resolve_path(root: Path, remote_path: str) -> Path: ...
 ```
 
-Anclar una única jaula en `STORAGE_ROOT` no basta: con el espacio de nombres en
-`STORAGE_ROOT/namespace/`, la ruta `/../blocks/<file_id>` cae **dentro** de
-`STORAGE_ROOT` y pasaría la comprobación. La jaula tiene que moverse con el
-plano que protege, y como hay dos planos hacen falta dos raíces. Sigue siendo
-la única jaula del sistema: no existe ninguna segunda comprobación de
-contención en ningún otro sitio.
+Anclar una única jaula en `STORAGE_ROOT` no basta: una ruta con `..` desde un
+árbol cae **dentro** de `STORAGE_ROOT` y pasaría la comprobación, aterrizando en
+el árbol de al lado. La jaula tiene que moverse con el plano que protege, y como
+hay dos planos hacen falta dos raíces. Sigue siendo la única jaula **del disco**:
+no existe ninguna segunda comprobación de contención en ningún otro sitio.
+
+La normalización de las **rutas lógicas** —las que escribe el usuario y hoy ya
+no tocan el disco— es un asunto distinto y vive en la SPEC-04: una ruta que
+suba por encima de `/` responde `403` antes de convertirse en clave del anillo.
 
 ## Metadatos — SPEC-04
 
@@ -166,14 +192,29 @@ Request → `{"path": "/universidad/tarea.pdf", "size": 10485760}`
 | `409` | Ya hay un archivo en esa ruta | `El archivo ya existe` |
 
 ### `POST /files/commit`
-Request → `{"file_id": "...", "blocks": [{"index": 0, "checksum": "..."}]}`
+Request → `{"path": "...", "file_id": "...", "blocks": [{"index": 0, "checksum": "...", "peers": ["peer2"]}]}`
 `200` → la entrada, ya con `state: "committed"`
 
 | Código | Cuándo | Detalle |
 |---|---|---|
-| `404` | No hay entrada con ese `file_id` | `El archivo no existe` |
+| `404` | No hay entrada con ese `file_id` en esa ruta | `El archivo no existe` |
 | `409` | La entrada ya está confirmada | `El archivo ya fue confirmado` |
-| `422` | Falta algún bloque, o hay menos confirmaciones que el factor de réplica | `Confirmación de bloques incompleta` |
+| `422` | Falta algún bloque, o algún bloque tiene menos peers distintos que el factor de réplica | `Confirmación de bloques incompleta` |
+| `422` | Algún `peer_id` reportado no está en el anillo | `Confirmación de bloques inválida` |
+
+`path` va en el cuerpo porque el dueño de una entrada se calcula desde la ruta:
+sin ella no hay forma de enrutar un `commit`, y el `file_id` no sirve — es un
+UUID que no dice nada de dónde vive la entrada.
+
+`peers` es **dónde quedó cada bloque de verdad**, no dónde lo planeó
+`allocate`. El almacén de bloques acepta lo que le manden sin comprobar si le
+tocaba (SPEC-03), así que el plan es una intención y el único que conoce el
+hecho es el cliente, que recibió los `201`. La entrada guarda lo reportado.
+
+Reportarlo obliga a validarlo: cada `peer_id` tiene que existir en el anillo, y
+los peers de un bloque se cuentan **distintos**. Sin eso el cliente podría
+escribir cualquier cosa y la metadata seguiría mintiendo, solo que con más
+pasos.
 
 Hasta el commit el archivo **no aparece en `ls`**. El `422` con factor 1 es
 trivial; con factor 3 funciona igual sin tocar el código.
@@ -185,12 +226,48 @@ trivial; con factor 3 funciona igual sin tocar el código.
 ### Operaciones de directorio
 Se mudan del monolito sin cambiar su contrato: `GET /files?path=` (ls),
 `POST /directories`, `DELETE /directories`, `DELETE /files?path=`.
-`DELETE /files` borra la entrada y lanza `DELETE /blocks/{file_id}` a los
-peers que aparezcan en ella.
 
-Las cuatro se enrutan igual que el resto: la clave es el directorio padre de
-la ruta pedida, salvo `ls`, cuya clave es la ruta pedida en sí, porque quien
-responde es el dueño del directorio que se lista.
+### Enrutamiento y salidas obligadas
+La clave de enrutamiento es siempre **el directorio cuyo contenido hay que
+mirar o tocar**. Para casi todo eso es el directorio padre de la ruta pedida;
+para `ls` es la ruta pedida en sí, porque el contenido que se lista es el suyo.
+
+| Operación | Clave | Se resuelve en el dueño | Además sale a |
+|---|---|---|---|
+| `GET /files` (ls) | la ruta pedida | listar su contenido | — |
+| `POST /files/allocate` | el padre | que existe su contenido y que el nombre está libre | — |
+| `POST /files/commit` | el padre de `path` | todo | — |
+| `GET /files/lookup` | el padre | todo | — |
+| `DELETE /files` (rm) | el padre | borrar la entrada | `DELETE /blocks/{file_id}` a los peers de la entrada |
+| `POST /directories` (mkdir) | el padre | que el nombre está libre, y escribir la entrada hija | crear el contenido vacío en el dueño del nuevo directorio |
+| `DELETE /directories` (rmdir) | el padre | que la entrada existe y es un directorio, y borrarla | comprobar que el contenido está vacío y borrarlo, en su dueño |
+
+`mkdir` y `rmdir` son las dos únicas que tocan dos peers, y es la consecuencia
+directa del doble registro. `rmdir` trata **la ausencia de contenido como
+directorio vacío**: es lo que permite deshacer un `mkdir` que se quedó a
+medias.
+
+### El contenido de un directorio, entre peers
+La segunda escritura de `mkdir` y el segundo borrado de `rmdir` necesitan una
+operación que actúe sobre el **contenido** de un directorio, no sobre su entrada
+en el padre. Su clave es la ruta pedida en sí, como la de `ls`.
+
+#### `POST /directories/content`
+Request → `{"path": "/universidad"}`. Crea el contenido vacío. Idempotente: si
+ya existe, `200` sin tocarlo.
+`200` → `{"path": "/universidad"}`
+
+#### `DELETE /directories/content?path=...`
+Borra el contenido si está vacío. Si no hay contenido, también `200`: es lo que
+deshace un `mkdir` a medias.
+`200` → `{"path": "/universidad"}`
+
+| Código | Cuándo | Detalle |
+|---|---|---|
+| `400` | El contenido tiene entradas | `El directorio no está vacío` |
+
+Las dos son simétricas al resto y no tienen canal privado: los peers exponen la
+misma API, y quien las llama es otro peer, no el cliente.
 
 ## Errores transversales
 
