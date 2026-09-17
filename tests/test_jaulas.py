@@ -144,3 +144,52 @@ def test_una_ruta_de_bloques_no_alcanza_los_metadatos(arboles):
         filesystem.resolve_path(arboles.blocks, "/../metadata/0000000000000000.json")
 
     assert error.value.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# La jaula compara peras con peras — descubierto por la SPEC-05
+# ---------------------------------------------------------------------------
+
+def test_la_jaula_no_rechaza_su_propio_arbol_cuando_hay_escrituras_a_la_vez(arboles):
+    """En Windows, `Path.resolve()` devuelve a veces la forma larga
+    `\\?\C:\...`, cuyo ancla es `\\?\C:\` y no `C:\`. Comparada con una
+    raiz normal, la jaula rechaza rutas que estan dentro de ella.
+
+    Que rama de `realpath` se tome depende de si el directorio existe **en ese
+    instante**, asi que el fallo solo aparece cuando dos escrituras del mismo
+    archivo corren a la vez: exactamente lo que hace `send` desde la SPEC-05, y
+    lo que nadie hacia antes. De ahi que se pruebe con hilos y no con un caso
+    suelto: es la unica forma de recorrer esa rama.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def escribe(par):
+        vuelta, indice = par
+        destino = filesystem.resolve_path(
+            arboles.blocks, f"{UUID_DEMO}-{vuelta}/{indice:06d}.blk"
+        )
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(b"x")
+
+        return destino
+
+    for vuelta in range(20):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            escritos = list(pool.map(escribe, [(vuelta, i) for i in range(3)]))
+
+        assert len(escritos) == 3
+
+
+def test_la_jaula_entiende_una_raiz_en_forma_larga(arboles):
+    """El otro lado de lo mismo, sin hilos: la raiz en forma larga protege el
+    mismo arbol y sigue rechazando lo que se sale."""
+    larga = type(arboles.blocks)(filesystem.PREFIJO_LARGO + str(arboles.blocks))
+
+    dentro = filesystem.resolve_path(larga, f"{UUID_DEMO}/000000.blk")
+
+    assert dentro.name == "000000.blk"
+
+    with pytest.raises(HTTPException) as error:
+        filesystem.resolve_path(larga, "/../metadata/0000000000000000.json")
+
+    assert error.value.status_code == 403
