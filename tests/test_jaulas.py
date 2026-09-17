@@ -193,3 +193,50 @@ def test_la_jaula_entiende_una_raiz_en_forma_larga(arboles):
         filesystem.resolve_path(larga, "/../metadata/0000000000000000.json")
 
     assert error.value.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# La otra mitad del mismo error: la raiz que se alcanza por un enlace — SPEC-06
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def por_enlace(arboles, tmp_path, request):
+    """La misma raiz, alcanzada a traves de un enlace simbolico.
+
+    La variante de Windows —la forma larga— no puede darse en Linux: no existe
+    ese prefijo. La que si puede darse es esta, y es mas peligrosa porque no es
+    intermitente sino constante: `Path.resolve()` sigue el enlace, y comparar
+    la ruta resuelta con una raiz sin resolver haria que la jaula rechazara su
+    propio arbol **siempre**. En un contenedor no es teorico: un volumen puede
+    montarse en una ruta que sea un enlace.
+    """
+    destino = getattr(arboles, request.param)
+    enlace = tmp_path / f"enlace-a-{request.param}"
+
+    try:
+        enlace.symlink_to(destino, target_is_directory=True)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"este sistema no deja crear enlaces simbolicos: {error}")
+
+    return enlace
+
+
+@pytest.mark.parametrize("por_enlace", ["metadata", "blocks"], indirect=True)
+def test_la_jaula_acepta_su_arbol_alcanzado_por_un_enlace(por_enlace):
+    """Lo que el arreglo de la SPEC-05 tiene que cubrir sin haberlo previsto:
+    normaliza los dos lados de la comparacion, asi que los dos quedan
+    resueltos y el enlace no cambia nada."""
+    dentro = filesystem.resolve_path(por_enlace, f"{UUID_DEMO}/000000.blk")
+
+    assert dentro == (por_enlace.resolve() / UUID_DEMO / "000000.blk")
+
+
+@pytest.mark.parametrize("por_enlace", ["metadata", "blocks"], indirect=True)
+def test_la_jaula_por_enlace_sigue_rechazando_lo_que_se_sale(por_enlace):
+    """Aceptar el propio arbol no puede costar la jaula: seguir el enlace
+    resuelve donde esta la raiz de verdad, no la ablanda."""
+    with pytest.raises(HTTPException) as error:
+        filesystem.resolve_path(por_enlace, "/../fuera")
+
+    assert error.value.status_code == 403
+    assert error.value.detail == "Acceso fuera del sistema DFS no permitido"
