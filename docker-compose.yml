@@ -1,0 +1,95 @@
+# Tres peers y un cliente, todos la misma imagen.
+#
+# Lo comun va en anclas, y no por gusto: son las que impiden que las tres
+# copias del bootstrap se separen. Un peer con un bootstrap distinto no da un
+# error, da otro anillo — y el archivo se sube a un peer y se busca en otro.
+#
+# La dirección que va en el anillo es el **nombre de contenedor**, porque el
+# anillo guarda direcciones y desde la SPEC-05 el cliente las usa para mandar
+# cada bloque directo a su peer. `peer2:9002` le sirve a peer1 y al cliente de
+# dentro; `127.0.0.1:9002` solo al anfitrión. No hay una tercera que valga para
+# los dos, así que todo lo que mueve bytes se ejecuta dentro de la red: para eso
+# está el servicio `cliente`.
+
+x-peer: &peer
+  build: .
+  # Una etiqueta comun para los cuatro servicios: asi `up --build` reconstruye
+  # tambien la del cliente, que no esta en el perfil por defecto y se quedaria
+  # con el codigo de la vez anterior sin que nadie se enterara.
+  image: &imagen dfsha-p2p
+  environment: &entorno
+    DFSHA_BOOTSTRAP: peer1=http://peer1:9001,peer2=http://peer2:9002,peer3=http://peer3:9003
+    DFSHA_STORAGE_ROOT: /datos
+    # 65536 son 24 bloques para el archivo de 1,5 MiB de la demo: la palanca
+    # del reparto es el número de bloques, no el tamaño del archivo. Un
+    # despliegue de verdad usaría los 4 MiB del .env.example.
+    DFSHA_BLOCK_SIZE: "65536"
+    DFSHA_VNODES: "128"
+  healthcheck:
+    # Python y no curl: instalar un paquete en la imagen solo para preguntar si
+    # el peer está vivo, cuando dentro ya hay un intérprete con urllib, es peso
+    # sin motivo. Se pregunta por la dirección que el propio peer anuncia en el
+    # anillo, así que un peer sano es además un peer alcanzable por su nombre.
+    test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen(os.environ['DFSHA_ADDRESS'] + '/health').read()"]
+    interval: 3s
+    timeout: 3s
+    retries: 10
+    start_period: 3s
+
+services:
+  peer1:
+    <<: *peer
+    environment:
+      <<: *entorno
+      DFSHA_PEER_ID: peer1
+      DFSHA_ADDRESS: http://peer1:9001
+    # --host 0.0.0.0 no es opcional: dentro de un contenedor 127.0.0.1 es el
+    # propio contenedor y no llegaría nadie.
+    command: uvicorn server.main:app --host 0.0.0.0 --port 9001
+    ports: ["9001:9001"]
+    volumes: ["datos-peer1:/datos"]
+
+  peer2:
+    <<: *peer
+    environment:
+      <<: *entorno
+      DFSHA_PEER_ID: peer2
+      DFSHA_ADDRESS: http://peer2:9002
+    command: uvicorn server.main:app --host 0.0.0.0 --port 9002
+    ports: ["9002:9002"]
+    volumes: ["datos-peer2:/datos"]
+
+  peer3:
+    <<: *peer
+    environment:
+      <<: *entorno
+      DFSHA_PEER_ID: peer3
+      DFSHA_ADDRESS: http://peer3:9003
+    command: uvicorn server.main:app --host 0.0.0.0 --port 9003
+    ports: ["9003:9003"]
+    volumes: ["datos-peer3:/datos"]
+
+  # Con lo que se entra en la red. No arranca con `up`: se invoca con
+  # `docker compose run --rm cliente`. No publica puertos y no tiene volumen de
+  # datos, porque no guarda nada: los bloques viven en los peers.
+  cliente:
+    build: .
+    image: *imagen
+    # El perfil es lo que lo deja fuera de `up`: `run` lo activa solo, y sin él
+    # un `up` dejaría un REPL sentado en un contenedor al que nadie habla.
+    profiles: ["cli"]
+    environment: *entorno
+    depends_on:
+      peer1: {condition: service_healthy}
+      peer2: {condition: service_healthy}
+      peer3: {condition: service_healthy}
+    command: python -m client.client
+    stdin_open: true
+    tty: true
+
+# Volúmenes con nombre: los datos sobreviven a un `restart` —que es lo que la
+# SPEC-04 prometió sobre la persistencia— y se tiran con `down -v`.
+volumes:
+  datos-peer1:
+  datos-peer2:
+  datos-peer3:

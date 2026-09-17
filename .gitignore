@@ -85,6 +85,9 @@ logs/
 server/storage/*
 !server/storage/.gitkeep
 
+# Raices de datos de los peers levantados a mano (README, seccion 6.2)
+data/
+
 # =========================================================
 # Temporary / downloaded files
 # =========================================================
