@@ -35,8 +35,14 @@ def recargar(monkeypatch):
 
     yield _recargar
 
-    for nombre in VARIABLES:
-        monkeypatch.delenv(nombre, raising=False)
+    # El entorno se deshace **antes** de la ultima recarga, no despues.
+    #
+    # Al reves —que es como estaba— `config` se queda con los valores por
+    # defecto mientras el proceso tiene otros, y `metadata` y `blocks`, que
+    # derivaron sus raices de la primera importacion, dejan de cuadrar con el.
+    # En el anfitrion no se nota porque no hay ninguna DFSHA_* puesta; dentro
+    # del contenedor, donde `DFSHA_STORAGE_ROOT` vale `/datos`, si.
+    monkeypatch.undo()
 
     importlib.reload(config)
 
