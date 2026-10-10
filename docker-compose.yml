@@ -25,6 +25,8 @@ x-peer: &peer
     # despliegue de verdad usaría los 4 MiB del .env.example.
     DFSHA_BLOCK_SIZE: "65536"
     DFSHA_VNODES: "128"
+    DFSHA_REPLICAS: "2"
+
   healthcheck:
     # Python y no curl: instalar un paquete en la imagen solo para preguntar si
     # el peer está vivo, cuando dentro ya hay un intérprete con urllib, es peso

@@ -63,3 +63,5 @@ STORAGE_ROOT = Path(
 BLOCK_SIZE = int(os.environ.get("DFSHA_BLOCK_SIZE", 4 * 1024 * 1024))
 
 VNODES = int(os.environ.get("DFSHA_VNODES", 128))
+
+REPLICAS = int(os.environ.get("DFSHA_REPLICAS", "1"))

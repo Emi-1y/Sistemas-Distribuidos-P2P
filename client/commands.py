@@ -185,14 +185,10 @@ def peer_addresses() -> dict[str, str]:
     }
 
 
-def _subida(origen, entrada, bloque, direcciones):
-    """La tarea de subir un bloque a todos sus peers.
 
-    Se sube a todos los que el plan nombra, no al primero: con factor de
-    replica 3 el commit exige tres peers distintos, y subir solo al primero
-    provocaria un 422 que nadie sabria leer. Hoy la lista tiene un elemento y
-    el bucle da una vuelta.
-    """
+def _subida(origen, entrada, bloque, direcciones):
+    """Sube un bloque e intenta otros peers si alguno falla."""
+
     def subir():
         datos = transfer.read_chunk(
             origen, bloque["index"], entrada["block_size"], bloque["size"]
@@ -200,25 +196,43 @@ def _subida(origen, entrada, bloque, direcciones):
         suma = transfer.checksum(datos)
         puestos = []
 
-        for peer_id in bloque["peers"]:
-            respuesta = requests.put(
-                f"{direcciones[peer_id]}/blocks"
-                f"/{entrada['file_id']}/{bloque['index']}",
-                data=datos,
-                headers={"X-Block-Checksum": suma},
-            )
+        # Intentar todos los candidatos disponibles, no solo los iniciales.
+        candidatos = bloque.get("candidates") or bloque["peers"]
+
+        # Si el plan no especifica el factor, conservar el comportamiento anterior.
+        objetivo = entrada.get(
+            "replication_factor", len(bloque["peers"])
+        )
+
+        for peer_id in dict.fromkeys(candidatos):
+            try:
+                respuesta = requests.put(
+                    f"{direcciones[peer_id]}/blocks"
+                    f"/{entrada['file_id']}/{bloque['index']}",
+                    data=datos,
+                    headers={"X-Block-Checksum": suma},
+                )
+            except requests.RequestException:
+                # Si el peer no responde, probar con el siguiente.
+                continue
 
             if respuesta.status_code != 201:
-                raise transfer.TransferError(
-                    f"el peer {peer_id} rechazo el bloque {bloque['index']} "
-                    f"con un {respuesta.status_code}"
-                )
+                # Si rechaza el bloque, intentar con otro peer.
+                continue
 
             puestos.append(peer_id)
 
-        # Lo que se reporta es donde quedo el bloque de verdad, no donde lo
-        # planeo el allocate: el plan era una intencion, y el unico que conoce
-        # el hecho es quien recibio los 201.
+            # Ya tenemos suficientes réplicas distintas.
+            if len(puestos) >= objetivo:
+                break
+
+        if len(puestos) < objetivo:
+            raise transfer.TransferError(
+                f"No se pudieron guardar suficientes réplicas del bloque "
+                f"{bloque['index']}: se necesitan {objetivo} y se guardaron "
+                f"{len(puestos)}"
+            )
+
         return {
             "index": bloque["index"],
             "checksum": suma,
@@ -231,11 +245,11 @@ def _subida(origen, entrada, bloque, direcciones):
 def upload_blocks(origen, entrada, direcciones) -> list[dict]:
     """Todos los bloques, en paralelo y directos a sus peers."""
     desconocidos = sorted({
-        peer_id
-        for bloque in entrada["blocks"]
-        for peer_id in bloque["peers"]
-        if peer_id not in direcciones
-    })
+    peer_id
+    for bloque in entrada["blocks"]
+    for peer_id in (bloque.get("candidates") or bloque["peers"])
+    if peer_id not in direcciones
+})
 
     # Antes de subir un byte: si el anillo cambio entre el allocate y ahora,
     # escribir a ciegas dejaria bloques que nadie va a encontrar.

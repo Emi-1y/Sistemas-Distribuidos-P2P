@@ -671,6 +671,37 @@ def test_se_sube_a_todos_los_peers_del_bloque(peer, local):
         for confirmado in peer.commit["blocks"]
     )
 
+def test_send_reintenta_otro_peer_si_un_destino_falla(peer, local):
+    contenido = bytes(range(250))
+    (local / "tarea.bin").write_bytes(contenido)
+
+    peer.plan = plan_pendiente(
+        "/tarea.bin",
+        len(contenido),
+        reparto=lambda i: ["peer2", "peer3"]
+    )
+
+    peer.plan["replication_factor"] = 2
+
+    for bloque in peer.plan["blocks"]:
+        bloque["candidates"] = ["peer2", "peer3", "peer1"]
+
+    peer.caidos = {"peer2"}
+
+    commands.send("/", "tarea.bin")
+
+    for bloque in peer.plan["blocks"]:
+        confirmacion = next(
+            item for item in peer.commit["blocks"]
+            if item["index"] == bloque["index"]
+        )
+
+        assert confirmacion["peers"] == ["peer3", "peer1"]
+
+    assert all(
+        len(item["peers"]) == 2
+        for item in peer.commit["blocks"]
+    )
 
 def test_si_el_primer_peer_no_responde_se_pide_al_siguiente(peer, local):
     """AC-20. Con factor 3 la lectura tolera un peer caido sin una linea mas."""

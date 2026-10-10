@@ -25,6 +25,7 @@ METADATA_ROOT = config.STORAGE_ROOT / "metadata"
 # El factor de réplica, en un solo sitio. Subirlo a 3 no exige tocar nada más:
 # `allocate` planea tres peers por bloque y `commit` exige tres confirmaciones.
 REPLICAS = 1
+REPLICAS = config.REPLICAS
 
 METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -323,11 +324,17 @@ def allocate(path: str, size: int) -> dict:
     while restante > 0:
         trozo = min(block_size, restante)
 
+        candidatos = ring.choose_nodes(
+            f"{file_id}:{index}",
+            len(ring.LOCAL.peers())
+        )
+
         bloques.append({
             "index": index,
             "size": trozo,
             "checksum": None,
-            "peers": ring.choose_nodes(f"{file_id}:{index}", REPLICAS)
+            "peers": candidatos[:REPLICAS],
+            "candidates": candidatos
         })
 
         restante -= trozo
@@ -338,6 +345,7 @@ def allocate(path: str, size: int) -> dict:
         "file_id": file_id,
         "size": size,
         "block_size": block_size,
+        "replication_factor": REPLICAS,
         "state": "pending",
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "blocks": bloques

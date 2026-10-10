@@ -18,6 +18,7 @@ VARIABLES = (
     "DFSHA_STORAGE_ROOT",
     "DFSHA_BLOCK_SIZE",
     "DFSHA_VNODES",
+    "DFSHA_REPLICAS",
 )
 
 
@@ -57,6 +58,8 @@ def test_sin_configurar_nada_el_peer_se_comporta_como_el_monolito(recargar):
     assert recargado.BLOCK_SIZE == 4 * 1024 * 1024
     assert recargado.VNODES == 128
     assert recargado.STORAGE_ROOT.name == "storage"
+
+    assert recargado.REPLICAS == 1
 
 
 def test_la_raiz_de_datos_sale_del_entorno(recargar, tmp_path):
@@ -130,3 +133,7 @@ def test_is_valid_address_acepta_urls_http(direccion):
 def test_is_valid_address_rechaza_lo_que_no_es_una_url_http(direccion):
     """Una direccion invalida en el anillo falla mucho despues y lejos de aqui."""
     assert config.is_valid_address(direccion) is False
+
+def test_replication_factor_comes_from_environment(recargar):
+    reloaded = recargar(DFSHA_REPLICAS="2")
+    assert reloaded.REPLICAS == 2
