@@ -50,14 +50,16 @@ con sus tests:
 
 Lo que **no** está y es del hito 3:
 
-- **Replicación.** El factor de réplica vale 1 y está en un solo sitio
-  (`metadata.REPLICAS`). El anillo ya devuelve N peers distintos para una clave
-  y el `commit` ya exige N confirmaciones distintas: subirlo a 3 no pide tocar
-  la lógica, pide decidir qué pasa cuando una réplica falla.
+- **Reparación de réplicas.** El factor de réplica es configurable por entorno
+  (`DFSHA_REPLICAS`), `allocate` planea N peers distintos, el cliente reintenta
+  con candidatos alternativos y el `commit` exige N confirmaciones distintas.
+  Lo que falta es la reparación automática cuando una réplica desaparece de
+  forma permanente.
 - **Reconciliación de anillos divergentes.** Hoy, un peer que no contesta a un
   alta se queda con una membresía vieja y nadie lo repara.
-- **Tolerancia a fallos durante una operación.** Un `send` con un peer caído
-  falla entero y deja el nombre reservado; soltarlo es un `rm` manual.
+- **Tolerancia a fallos durante una operación.** Si un `send` no consigue
+  suficientes réplicas porque hay demasiados peers caídos, falla entero y deja
+  el nombre reservado; soltarlo es un `rm` manual.
 - **Redistribución de bloques al entrar o salir un peer.** Las claves se
   remapean, pero los `.blk` que ya están escritos no se mueven solos.
 - **Autenticación, TLS y cuotas.** No hay ninguna.

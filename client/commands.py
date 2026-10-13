@@ -205,12 +205,18 @@ def _subida(origen, entrada, bloque, direcciones):
         )
 
         for peer_id in dict.fromkeys(candidatos):
+            if peer_id not in direcciones:
+                # El anillo ya no conoce este peer; lo saltamos y dejamos que
+                # upload_blocks lo detecte de forma centralizada.
+                continue
+
             try:
                 respuesta = requests.put(
                     f"{direcciones[peer_id]}/blocks"
                     f"/{entrada['file_id']}/{bloque['index']}",
                     data=datos,
                     headers={"X-Block-Checksum": suma},
+                    timeout=HEALTH_TIMEOUT,
                 )
             except requests.RequestException:
                 # Si el peer no responde, probar con el siguiente.
@@ -245,11 +251,11 @@ def _subida(origen, entrada, bloque, direcciones):
 def upload_blocks(origen, entrada, direcciones) -> list[dict]:
     """Todos los bloques, en paralelo y directos a sus peers."""
     desconocidos = sorted({
-    peer_id
-    for bloque in entrada["blocks"]
-    for peer_id in (bloque.get("candidates") or bloque["peers"])
-    if peer_id not in direcciones
-})
+        peer_id
+        for bloque in entrada["blocks"]
+        for peer_id in (bloque.get("candidates") or bloque["peers"])
+        if peer_id not in direcciones
+    })
 
     # Antes de subir un byte: si el anillo cambio entre el allocate y ahora,
     # escribir a ciegas dejaria bloques que nadie va a encontrar.
@@ -380,8 +386,14 @@ def send(current_path: str, filename: str):
                 "borra los bloques que si llegaron."
             )
 
-    except requests.RequestException:
-        print("Error: no se pudo conectar con el servidor")
+    except requests.RequestException as exc:
+        print(f"Error de conexión: {type(exc).__name__}: {exc}")
+
+        if reservado:
+            print(
+                f"No se subio nada en firme. 'rm {destino}' libera el nombre y "
+                "borra los bloques que si llegaron."
+            )
 
 
 def receive(current_path: str, filename: str):

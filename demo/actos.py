@@ -113,18 +113,19 @@ def defectos(reparto: dict[int, list[str]], segun_lookup, peers) -> list[str]:
 
         if not tiene:
             problemas.append(f"el bloque {indice} no lo sirve ningun peer")
-        elif len(tiene) > 1:
-            # Con factor de replica 1, dos tenedores no son redundancia: son
-            # una escritura que fue a parar donde no le tocaba.
-            problemas.append(
-                f"el bloque {indice} lo sirven {len(tiene)} peers: {', '.join(tiene)}"
-            )
-        elif tiene != esperado:
+        elif set(tiene) != set(esperado):
             # El enlace entre los dos planos: los bytes estan donde los
             # metadatos dicen, o el `receive` de otro dia no los encontrara.
             problemas.append(
-                f"el bloque {indice} lo sirve {tiene[0]} y `lookup` dice "
+                f"el bloque {indice} lo sirven {', '.join(tiene)} y `lookup` dice "
                 f"{', '.join(esperado) or 'nadie'}"
+            )
+        elif len(tiene) != len(esperado):
+            # Mismo conjunto pero con repeticiones: ['peer2', 'peer2'] no son
+            # dos replicas distintas.
+            problemas.append(
+                f"el bloque {indice} tiene {len(tiene)} entradas pero "
+                f"`lookup` espera {len(esperado)} distintas"
             )
 
     for peer_id in peers:

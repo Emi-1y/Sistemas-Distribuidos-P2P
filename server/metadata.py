@@ -22,11 +22,6 @@ from server.filesystem import resolve_path
 # El plano de metadatos: un árbol propio, hermano del de bloques.
 METADATA_ROOT = config.STORAGE_ROOT / "metadata"
 
-# El factor de réplica, en un solo sitio. Subirlo a 3 no exige tocar nada más:
-# `allocate` planea tres peers por bloque y `commit` exige tres confirmaciones.
-REPLICAS = 1
-REPLICAS = config.REPLICAS
-
 METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 
@@ -333,7 +328,7 @@ def allocate(path: str, size: int) -> dict:
             "index": index,
             "size": trozo,
             "checksum": None,
-            "peers": candidatos[:REPLICAS],
+            "peers": candidatos[:config.REPLICAS],
             "candidates": candidatos
         })
 
@@ -345,7 +340,7 @@ def allocate(path: str, size: int) -> dict:
         "file_id": file_id,
         "size": size,
         "block_size": block_size,
-        "replication_factor": REPLICAS,
+        "replication_factor": config.REPLICAS,
         "state": "pending",
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "blocks": bloques
@@ -412,7 +407,7 @@ def commit(path: str, file_id: str, blocks: list[dict]) -> dict:
         # Peers **distintos**: repetir uno no es replicar.
         distintos = list(dict.fromkeys(confirmado["peers"]))
 
-        if len(distintos) < REPLICAS:
+        if len(distintos) < config.REPLICAS:
             raise HTTPException(
                 status_code=422,
                 detail="Confirmación de bloques incompleta"
