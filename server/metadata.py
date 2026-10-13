@@ -467,3 +467,40 @@ def remove_file(path: str) -> dict:
     write_bucket(bucket)
 
     return entrada
+
+
+def update_block_peers(path: str, file_id: str, index: int, peers: list[str]) -> dict:
+    """Actualiza la lista de peers de un bloque en la entrada confirmada.
+
+    Se usa durante la reparación de réplicas: cuando un bloque se copia a un
+    nuevo peer, los metadatos deben reflejarlo para que las lecturas futuras
+    lo encuentren allí.
+    """
+    ruta = normalize(path)
+    bucket, nombre = _bucket_of_parent(ruta, "El archivo no existe")
+    entrada = bucket["entries"].get(nombre)
+
+    if (
+        entrada is None
+        or entrada.get("type") == "directory"
+        or entrada.get("state") != "committed"
+        or entrada.get("file_id") != file_id
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="El archivo no existe"
+        )
+
+    for bloque in entrada["blocks"]:
+        if bloque["index"] == index:
+            bloque["peers"] = list(dict.fromkeys(peers))
+            break
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Bloque no encontrado en la entrada"
+        )
+
+    write_bucket(bucket)
+
+    return entrada

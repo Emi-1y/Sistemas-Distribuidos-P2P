@@ -4,7 +4,7 @@ from fastapi import FastAPI, Header, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from server import blocks, config, membership, metadata, ring, routing
+from server import blocks, config, membership, metadata, repair, ring, routing
 
 
 @asynccontextmanager
@@ -134,6 +134,19 @@ def get_block(file_id: str, index: str):
         media_type="application/octet-stream",
         headers={"X-Block-Checksum": checksum}
     )
+
+
+@app.head("/blocks/{file_id}/{index}")
+def head_block(file_id: str, index: str):
+    identifier, number = blocks.parse_identifiers(file_id, index)
+
+    if not blocks.block_exists(identifier, number):
+        raise HTTPException(
+            status_code=404,
+            detail="El bloque no existe"
+        )
+
+    return {}
 
 
 @app.delete("/blocks/{file_id}")
@@ -306,6 +319,26 @@ def lookup(path: str, x_forwarded_by: str | None = Header(default=None)):
         return ajeno
 
     return metadata.lookup(ruta)
+
+
+@app.post("/files/repair")
+def repair_file(path: str, x_forwarded_by: str | None = Header(default=None)):
+    """Repara las réplicas de un archivo confirmado.
+
+    El peer dueño de la entrada verifica cuántas réplicas reales tiene cada
+    bloque y copia los que faltan desde un peer vivo hacia peers nuevos.
+    """
+    ruta = metadata.normalize(path)
+
+    ajeno = routing.delegate(
+        metadata.parent_of(ruta), forwarded(x_forwarded_by),
+        "POST", "/files/repair", params={"path": ruta}
+    )
+
+    if ajeno is not None:
+        return ajeno
+
+    return repair.repair(ruta)
 
 
 # El contenido de un directorio: la segunda escritura de `mkdir` y el segundo

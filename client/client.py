@@ -7,6 +7,7 @@ from client.commands import (
     rm,
     send,
     receive,
+    repair,
     change_directory,
     connect
 )
@@ -90,6 +91,13 @@ def main():
                 continue
 
             receive(current_path, args[0])
+
+        elif command == "repair":
+            if len(args) != 1:
+                print("Uso: repair <archivo>")
+                continue
+
+            repair(current_path, args[0])
 
         elif command == "cd":
             if len(args) != 1:

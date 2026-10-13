@@ -108,6 +108,15 @@ escrito antes de responder — no quedan bloques corruptos.
 | `400` | `index` no es un entero mayor o igual que 0, o `file_id` no es un UUID | `Identificador de bloque inválido` |
 | `404` | No existe ese bloque en este peer | `El bloque no existe` |
 
+### `HEAD /blocks/{file_id}/{index}`
+Verifica la existencia del bloque en este peer sin devolver su contenido.
+
+| Código | Cuándo | Detalle |
+|---|---|---|
+| `200` | El bloque existe | (sin cuerpo) |
+| `400` | `index` no es un entero mayor o igual que 0, o `file_id` no es un UUID | `Identificador de bloque inválido` |
+| `404` | No existe ese bloque en este peer | `El bloque no existe` |
+
 ### `DELETE /blocks/{file_id}`
 Borra el directorio completo del archivo en este peer. Idempotente: si no
 tiene ningún bloque de ese archivo responde `200` con `"deleted": 0`, no `404`.
@@ -222,6 +231,20 @@ trivial; con factor 3 funciona igual sin tocar el código.
 ### `GET /files/lookup?path=...`
 `200` → la entrada completa. Solo entradas `committed`.
 `404` → `El archivo no existe`
+
+### `POST /files/repair?path=...`
+Repara las réplicas de un archivo confirmado. El dueño de la entrada verifica
+el estado real de cada bloque y copia los que faltan desde un peer vivo hacia
+peers nuevos del anillo.
+
+`200` → `{"path": "...", "file_id": "...", "repaired": true|false, "replication_factor": 2, "changes": [{"index": 0, "from": "peer1", "to": "peer3"}]}`
+
+| Código | Cuándo | Detalle |
+|---|---|---|
+| `404` | La ruta no es un archivo confirmado | `El archivo no existe` |
+| `422` | Un bloque no tiene ninguna réplica viva para copiar | `El bloque N no tiene ninguna réplica viva` |
+| `422` | El bloque copiado no coincide con el checksum de la entrada | `El bloque N llegó corrupto desde ...` |
+| `503` | No se pudo leer o escribir un bloque durante la copia | `El peer responsable no está disponible` |
 
 ### Operaciones de directorio
 Se mudan del monolito sin cambiar su contrato: `GET /files?path=` (ls),

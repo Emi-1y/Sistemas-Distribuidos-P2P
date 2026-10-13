@@ -1,0 +1,175 @@
+"""Reparación de réplicas de archivos confirmados.
+
+Cuando un peer desaparece o una réplica se corrompe, los bloques de un archivo
+pueden quedar por debajo del factor de réplica configurado. Este módulo
+verifica el estado real de las réplicas y las reconstruye copiando bloques
+entre peers.
+
+El coordinador de la reparación es el dueño de la entrada en metadatos. Eso
+mantiene la simetría del sistema: cualquier peer puede recibir la petición, y
+si no es el dueño la reenvía.
+"""
+
+import hashlib
+
+import httpx
+
+from server import blocks, config, metadata, ring
+
+
+TIMEOUT = 10.0
+
+
+def repair(path: str) -> dict:
+    """Repara las réplicas de un archivo confirmado.
+
+    Devuelve un resumen de los cambios realizados. Si el archivo ya tiene
+    todas sus réplicas, no mueve ningún byte.
+    """
+    entrada = metadata.lookup(path)
+    file_id = entrada["file_id"]
+    replicas_esperadas = entrada.get("replication_factor", config.REPLICAS)
+    cambios = []
+
+    for bloque in entrada["blocks"]:
+        index = bloque["index"]
+        checksum = bloque["checksum"]
+        peers_actuales = _peers_que_tienen_bloque(
+            file_id, index, bloque["peers"]
+        )
+        faltantes = replicas_esperadas - len(peers_actuales)
+
+        if faltantes <= 0:
+            continue
+
+        if not peers_actuales:
+            raise metadata.HTTPException(
+                status_code=422,
+                detail=f"El bloque {index} no tiene ninguna réplica viva"
+            )
+
+        fuente = peers_actuales[0]
+        nuevos = _elegir_nuevos_peers(
+            file_id, index, peers_actuales, faltantes
+        )
+
+        for peer_id in nuevos:
+            _copiar_bloque(file_id, index, checksum, fuente, peer_id)
+            peers_actuales.append(peer_id)
+            cambios.append({"index": index, "from": fuente, "to": peer_id})
+
+        metadata.update_block_peers(path, file_id, index, peers_actuales)
+
+    return {
+        "path": path,
+        "file_id": file_id,
+        "repaired": len(cambios) > 0,
+        "replication_factor": replicas_esperadas,
+        "changes": cambios
+    }
+
+
+def _peers_que_tienen_bloque(
+    file_id: str,
+    index: int,
+    peers_planificados: list[str]
+) -> list[str]:
+    """Pregunta a los peers del plan si realmente tienen el bloque."""
+    tienen = []
+
+    for peer_id in peers_planificados:
+        if peer_id == config.PEER_ID:
+            if blocks.block_exists(file_id, index):
+                tienen.append(peer_id)
+        elif _peer_tiene_bloque(peer_id, file_id, index):
+            tienen.append(peer_id)
+
+    return tienen
+
+
+def _peer_tiene_bloque(peer_id: str, file_id: str, index: int) -> bool:
+    """HEAD /blocks/{file_id}/{index} al peer remoto."""
+    try:
+        address = ring.address_of(peer_id)
+    except KeyError:
+        return False
+
+    try:
+        respuesta = httpx.head(
+            f"{address}/blocks/{file_id}/{index}",
+            timeout=TIMEOUT
+        )
+        return respuesta.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def _elegir_nuevos_peers(
+    file_id: str,
+    index: int,
+    peers_existentes: list[str],
+    cantidad: int
+) -> list[str]:
+    """Elige peers del anillo que no tengan ya el bloque."""
+    candidatos = ring.choose_nodes(
+        f"{file_id}:{index}",
+        len(ring.LOCAL.peers())
+    )
+
+    return [
+        peer_id
+        for peer_id in candidatos
+        if peer_id not in peers_existentes
+    ][:cantidad]
+
+
+def _copiar_bloque(
+    file_id: str,
+    index: int,
+    checksum_esperado: str,
+    fuente: str,
+    destino: str
+) -> None:
+    """Descarga el bloque de la fuente y lo sube al destino."""
+    try:
+        address_fuente = ring.address_of(fuente)
+        address_destino = ring.address_of(destino)
+    except KeyError as exc:
+        raise metadata.HTTPException(
+            status_code=422,
+            detail="Peer desconocido en el anillo"
+        ) from exc
+
+    try:
+        respuesta = httpx.get(
+            f"{address_fuente}/blocks/{file_id}/{index}",
+            timeout=TIMEOUT
+        )
+        respuesta.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise metadata.HTTPException(
+            status_code=503,
+            detail=f"No se pudo leer el bloque {index} de {fuente}"
+        ) from exc
+
+    datos = respuesta.content
+
+    if hashlib.sha256(datos).hexdigest() != checksum_esperado:
+        raise metadata.HTTPException(
+            status_code=422,
+            detail=f"El bloque {index} llegó corrupto desde {fuente}"
+        )
+
+    try:
+        respuesta = httpx.put(
+            f"{address_destino}/blocks/{file_id}/{index}",
+            data=datos,
+            headers={"X-Block-Checksum": checksum_esperado},
+            timeout=TIMEOUT
+        )
+        respuesta.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise metadata.HTTPException(
+            status_code=503,
+            detail=f"No se pudo escribir el bloque {index} en {destino}"
+        ) from exc

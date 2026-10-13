@@ -458,3 +458,32 @@ def change_directory(current_path: str, target: str) -> str:
     except requests.RequestException:
         print("Error: no se pudo conectar con el servidor")
         return current_path
+
+
+def repair(current_path: str, filename: str):
+    """Repara las réplicas de un archivo confirmado en el DFS."""
+    remoto = build_path(current_path, filename)
+
+    try:
+        response = requests.post(
+            f"{PEER_URL}/files/repair",
+            params={"path": remoto}
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+
+            if data.get("repaired"):
+                print(
+                    f"Archivo reparado: {len(data['changes'])} réplica(s) "
+                    "restaurada(s)"
+                )
+            else:
+                print("El archivo ya tiene todas sus réplicas")
+
+            return
+
+        print_error(response)
+
+    except requests.RequestException:
+        print("Error: no se pudo conectar con el servidor")

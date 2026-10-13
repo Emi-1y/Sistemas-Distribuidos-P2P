@@ -189,6 +189,11 @@ def read_block(file_id: str, index: int) -> tuple[Path, str]:
     return path, digest.hexdigest()
 
 
+def block_exists(file_id: str, index: int) -> bool:
+    """True si el bloque existe en este peer, sin recalcular checksum."""
+    return block_path(file_id, index).is_file()
+
+
 def delete_blocks(file_id: str) -> dict:
     """Borra todos los bloques del archivo en este peer. Idempotente.
 
