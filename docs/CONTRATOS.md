@@ -246,6 +246,13 @@ peers nuevos del anillo.
 | `422` | El bloque copiado no coincide con el checksum de la entrada | `El bloque N llegó corrupto desde ...` |
 | `503` | No se pudo leer o escribir un bloque durante la copia | `El peer responsable no está disponible` |
 
+### `POST /files/repair-all`
+Repara todas las entradas confirmadas que le tocan a este peer. Se usa para
+recuperar réplicas perdidas de forma masiva, ya sea por un peer caído o por
+una corrupción detectada.
+
+`200` → `{"scanned": 5, "repaired_files": 2, "total_changes": 4, "details": [{"path": "...", "changes": 2}]}`
+
 ### Operaciones de directorio
 Se mudan del monolito sin cambiar su contrato: `GET /files?path=` (ls),
 `POST /directories`, `DELETE /directories`, `DELETE /files?path=`.

@@ -8,6 +8,7 @@ from client.commands import (
     send,
     receive,
     repair,
+    repair_all,
     change_directory,
     connect
 )
@@ -98,6 +99,9 @@ def main():
                 continue
 
             repair(current_path, args[0])
+
+        elif command == "repair-all":
+            repair_all()
 
         elif command == "cd":
             if len(args) != 1:

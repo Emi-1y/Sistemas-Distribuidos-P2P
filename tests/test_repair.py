@@ -11,7 +11,7 @@ import pytest
 import requests
 from fastapi.testclient import TestClient
 
-from server import blocks, config, metadata, ring
+from server import blocks, config, membership, metadata, repair, ring
 from server.main import app
 
 
@@ -259,11 +259,16 @@ def test_repair_recupera_una_replica_perdida(client, red, arboles):
     assert data["repaired"] is True
     assert len(data["changes"]) == len(entrada["blocks"])
 
-    # Verificamos que los metadatos ahora incluyan al peer que faltaba.
+    # Verificamos que los metadatos ahora tengan 2 peers distintos.
     ficha = client.get("/files/lookup", params={"path": "/tarea.pdf"}).json()
     for bloque in ficha["blocks"]:
-        assert peer_perdido in bloque["peers"]
-        assert (peer_perdido, file_id, bloque["index"]) in red.almacen
+        assert len(bloque["peers"]) == 2
+        assert PEER1 in bloque["peers"]
+
+    # Y que el nuevo peer realmente tenga los bloques.
+    for bloque in ficha["blocks"]:
+        nuevo_peer = [p for p in bloque["peers"] if p != PEER1][0]
+        assert (nuevo_peer, file_id, bloque["index"]) in red.almacen
 
 
 def test_repair_falla_si_no_hay_ninguna_replica_viva(client, red, arboles):
@@ -312,3 +317,83 @@ def test_repair_verifica_checksum_al_copiar(client, red, arboles):
 
     assert respuesta.status_code == 422
     assert "corrupto" in respuesta.json()["detail"]
+
+
+def test_repair_all_repara_todo_lo_local(client, red, arboles):
+    """repair_all escanea todas las entradas locales y repara las afectadas."""
+    contenido = bytes(range(256)) * 4
+
+    sano = crear_archivo(arboles, "/sano.pdf", contenido, replicas=2)
+    afectado = crear_archivo(arboles, "/afectado.pdf", contenido, replicas=2)
+
+    # Poblamos la r�plica remota del archivo sano para dejarlo completo.
+    for bloque in sano["blocks"]:
+        for peer_id in bloque["peers"]:
+            if peer_id != PEER1:
+                red.guardar_remoto(
+                    peer_id, sano["file_id"], bloque["index"],
+                    _trozo(contenido, bloque)
+                )
+
+    # El archivo afectado solo tiene la r�plica local.
+    respuesta = client.post("/files/repair-all")
+
+    assert respuesta.status_code == 200
+    data = respuesta.json()
+    assert data["scanned"] == 2
+    assert data["repaired_files"] == 1
+    assert data["total_changes"] == len(afectado["blocks"])
+
+
+def test_repair_for_peer_solo_toca_archivos_afectados(client, red, arboles):
+    """repair_for_peer('peer2') solo repara archivos que ten�an bloques en peer2."""
+    contenido = bytes(range(256)) * 4
+
+    afectado = crear_archivo(arboles, "/afectado.pdf", contenido, replicas=2)
+    no_afectado = crear_archivo(arboles, "/no-afectado.pdf", contenido, replicas=2)
+
+    # Forzamos peers planificados conocidos.
+    for bloque in afectado["blocks"]:
+        bloque["peers"] = [PEER1, PEER2]
+    for bloque in no_afectado["blocks"]:
+        bloque["peers"] = [PEER1, PEER3]
+
+    # Reflejamos los cambios en metadatos.
+    for bloque in afectado["blocks"]:
+        metadata.update_block_peers(
+            afectado["path"], afectado["file_id"], bloque["index"], bloque["peers"]
+        )
+    for bloque in no_afectado["blocks"]:
+        metadata.update_block_peers(
+            no_afectado["path"], no_afectado["file_id"], bloque["index"],
+            bloque["peers"]
+        )
+
+    # Poblamos las r�plicas remotas para que no-afectado ya est� completo.
+    for bloque in no_afectado["blocks"]:
+        red.guardar_remoto(
+            PEER3, no_afectado["file_id"], bloque["index"],
+            _trozo(contenido, bloque)
+        )
+
+    resultado = repair.repair_for_peer(PEER2)
+
+    assert resultado["fallen_peer"] == PEER2
+    assert resultado["repaired_files"] == 1
+    assert resultado["total_changes"] == len(afectado["blocks"])
+
+
+def test_health_check_detecta_peer_caido(monkeypatch):
+    """health_check_all marca como ca�do al peer que no responde."""
+    crear_anillo(monkeypatch)
+
+    respuestas = {"peer2": False, "peer3": True}
+
+    def fake_health(peer_id):
+        return respuestas.get(peer_id, True)
+
+    monkeypatch.setattr(membership, "health_check_peer", fake_health)
+
+    caidos = membership.health_check_all()
+
+    assert caidos == [PEER2]

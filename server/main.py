@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, Request
@@ -7,12 +8,48 @@ from pydantic import BaseModel
 from server import blocks, config, membership, metadata, repair, ring, routing
 
 
+HEARTBEAT_INTERVAL = 30.0
+
+
+async def _heartbeat_loop():
+    """Verifica periódicamente la salud de los peers y repara lo afectado.
+
+    Corre en segundo plano durante la vida de la aplicación. Si detecta que
+    un peer no responde, repara los archivos locales que tenían bloques en
+    ese peer.
+    """
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+
+        try:
+            caidos = membership.health_check_all()
+        except Exception:
+            continue
+
+        for peer_id in caidos:
+            try:
+                await asyncio.to_thread(repair.repair_for_peer, peer_id)
+            except Exception:
+                pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Un peer que no figura en su propio bootstrap se presenta y absorbe la
     # membresía. El que sí figura no emite ninguna petición.
     membership.announce()
-    yield
+
+    tarea = asyncio.create_task(_heartbeat_loop())
+
+    try:
+        yield
+    finally:
+        tarea.cancel()
+
+        try:
+            await tarea
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
@@ -339,6 +376,18 @@ def repair_file(path: str, x_forwarded_by: str | None = Header(default=None)):
         return ajeno
 
     return repair.repair(ruta)
+
+
+@app.post("/files/repair-all")
+def repair_all_files(x_forwarded_by: str | None = Header(default=None)):
+    """Repara todas las entradas confirmadas que le tocan a este peer."""
+    if forwarded(x_forwarded_by):
+        raise HTTPException(
+            status_code=508,
+            detail="Bucle de enrutamiento detectado"
+        )
+
+    return repair.repair_all()
 
 
 # El contenido de un directorio: la segunda escritura de `mkdir` y el segundo

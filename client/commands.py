@@ -487,3 +487,23 @@ def repair(current_path: str, filename: str):
 
     except requests.RequestException:
         print("Error: no se pudo conectar con el servidor")
+
+
+def repair_all():
+    """Repara todas las entradas confirmadas que le tocan al peer conectado."""
+    try:
+        response = requests.post(f"{PEER_URL}/files/repair-all")
+
+        if response.status_code == 200:
+            data = response.json()
+            print(
+                f"Escaneados {data['scanned']} archivo(s), "
+                f"reparados {data['repaired_files']}, "
+                f"{data['total_changes']} réplica(s) restaurada(s)"
+            )
+            return
+
+        print_error(response)
+
+    except requests.RequestException:
+        print("Error: no se pudo conectar con el servidor")

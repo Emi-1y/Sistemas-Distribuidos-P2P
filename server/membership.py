@@ -122,3 +122,39 @@ def _send_join(target: str, payload: dict, headers: dict) -> dict | None:
         pass
 
     return None
+
+
+def health_check_peer(peer_id: str) -> bool:
+    """True si el peer responde a /health."""
+    try:
+        address = ring.address_of(peer_id)
+    except KeyError:
+        return False
+
+    try:
+        respuesta = httpx.get(
+            f"{address}/health",
+            timeout=TIMEOUT
+        )
+        return respuesta.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def health_check_all() -> list[str]:
+    """Devuelve la lista de peers del anillo que no responden a /health.
+
+    Se excluye a sí mismo: un peer no se marca como caído a sí mismo.
+    """
+    caidos = []
+
+    for peer in ring.LOCAL.peers():
+        peer_id = peer["peer_id"]
+
+        if peer_id == config.PEER_ID:
+            continue
+
+        if not health_check_peer(peer_id):
+            caidos.append(peer_id)
+
+    return caidos

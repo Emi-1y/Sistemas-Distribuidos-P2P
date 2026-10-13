@@ -504,3 +504,24 @@ def update_block_peers(path: str, file_id: str, index: int, peers: list[str]) ->
     write_bucket(bucket)
 
     return entrada
+
+
+def list_all_files() -> list[dict]:
+    """Todos los archivos confirmados cuyo directorio padre le toca a este peer.
+
+    Se usa durante la reparación automática: cada peer solo puede reparar las
+    entradas que guarda localmente.
+    """
+    archivos = []
+
+    for ruta_bucket in METADATA_ROOT.glob("*.json"):
+        bucket = json.loads(ruta_bucket.read_text(encoding="utf-8"))
+
+        for entrada in bucket.get("entries", {}).values():
+            if (
+                entrada.get("type") != "directory"
+                and entrada.get("state") == "committed"
+            ):
+                archivos.append(entrada)
+
+    return archivos

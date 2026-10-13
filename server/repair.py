@@ -173,3 +173,73 @@ def _copiar_bloque(
             status_code=503,
             detail=f"No se pudo escribir el bloque {index} en {destino}"
         ) from exc
+
+
+def repair_all() -> dict:
+    """Repara todas las entradas confirmadas que le tocan a este peer.
+
+    Devuelve un resumen agregado de los archivos tocados y las réplicas
+    restauradas.
+    """
+    archivos = metadata.list_all_files()
+    reparados = 0
+    total_cambios = 0
+    detalles = []
+
+    for entrada in archivos:
+        try:
+            resultado = repair(entrada["path"])
+        except metadata.HTTPException:
+            # Un archivo que no se puede reparar no debe detener los demás.
+            continue
+
+        if resultado.get("repaired"):
+            reparados += 1
+            total_cambios += len(resultado.get("changes", []))
+            detalles.append({
+                "path": entrada["path"],
+                "changes": len(resultado.get("changes", []))
+            })
+
+    return {
+        "scanned": len(archivos),
+        "repaired_files": reparados,
+        "total_changes": total_cambios,
+        "details": detalles
+    }
+
+
+def repair_for_peer(fallen_peer_id: str) -> dict:
+    """Repara los archivos que tenían al menos un bloque en el peer caído.
+
+    Se usa desde el heartbeat automático: cuando se detecta que un peer no
+    responde, cada peer repara las entradas locales que podrían haber perdido
+    una réplica.
+    """
+    archivos = metadata.list_all_files()
+    reparados = 0
+    total_cambios = 0
+
+    for entrada in archivos:
+        afectado = any(
+            fallen_peer_id in bloque.get("peers", [])
+            for bloque in entrada["blocks"]
+        )
+
+        if not afectado:
+            continue
+
+        try:
+            resultado = repair(entrada["path"])
+        except metadata.HTTPException:
+            continue
+
+        if resultado.get("repaired"):
+            reparados += 1
+            total_cambios += len(resultado.get("changes", []))
+
+    return {
+        "fallen_peer": fallen_peer_id,
+        "repaired_files": reparados,
+        "total_changes": total_cambios
+    }
