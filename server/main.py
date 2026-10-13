@@ -21,11 +21,21 @@ async def _heartbeat_loop():
     while True:
         await asyncio.sleep(HEARTBEAT_INTERVAL)
 
+        # 1. Reconciliación de anillos: absorbe peers que otros conocen y
+        #    este peer no tiene. Va antes del health check para tener la vista
+        #    más completa posible antes de decidir quién está caído.
+        try:
+            await asyncio.to_thread(membership.reconcile_all)
+        except Exception:
+            pass
+
+        # 2. Health check: detecta peers que no responden.
         try:
             caidos = membership.health_check_all()
         except Exception:
             continue
 
+        # 3. Reparación de réplicas afectadas por los peers caídos.
         for peer_id in caidos:
             try:
                 await asyncio.to_thread(repair.repair_for_peer, peer_id)
@@ -129,6 +139,21 @@ def join(
         request.address,
         forwarded=forwarded(x_forwarded_by)
     )
+
+
+@app.post("/peers/reconcile")
+def reconcile():
+    """Fuerza la reconciliación del anillo con todos los peers conocidos.
+
+    Útil cuando se sospecha que el anillo local está desactualizado.
+    """
+    actualizados = membership.reconcile_all()
+
+    return {
+        "ring_version": ring.LOCAL.version(),
+        "updated_from": actualizados,
+        "peers": ring.LOCAL.peers()
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -158,3 +158,58 @@ def health_check_all() -> list[str]:
             caidos.append(peer_id)
 
     return caidos
+
+
+def reconcile_with(peer_id: str) -> bool:
+    """Compara el anillo local con el de otro peer y absorbe lo que le falta.
+
+    Devuelve True si el anillo local cambió. No sobrescribe direcciones de peers
+    ya conocidos: solo añade peers que el local no tenía.
+    """
+    try:
+        address = ring.address_of(peer_id)
+    except KeyError:
+        return False
+
+    try:
+        respuesta = httpx.get(
+            f"{address}/ring",
+            timeout=TIMEOUT
+        )
+
+        if respuesta.status_code != 200:
+            return False
+
+        datos = respuesta.json()
+    except httpx.HTTPError:
+        return False
+
+    cambio = False
+
+    for peer in datos.get("peers", []):
+        try:
+            ring.LOCAL.address_of(peer["peer_id"])
+        except KeyError:
+            ring.LOCAL.add_peer(peer["peer_id"], peer["address"])
+            cambio = True
+
+    return cambio
+
+
+def reconcile_all() -> list[str]:
+    """Reconcilia el anillo con todos los peers conocidos.
+
+    Devuelve la lista de peers desde los que se aprendió algo nuevo.
+    """
+    actualizados = []
+
+    for peer in ring.LOCAL.peers():
+        peer_id = peer["peer_id"]
+
+        if peer_id == config.PEER_ID:
+            continue
+
+        if reconcile_with(peer_id):
+            actualizados.append(peer_id)
+
+    return actualizados

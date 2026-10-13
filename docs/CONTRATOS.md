@@ -41,6 +41,13 @@ Request → `{"peer_id": "...", "address": "http://peer2:9002"}`
 | `400` | `address` no es una URL http válida | `Dirección de peer inválida` |
 | `409` | Ese `peer_id` ya está en el anillo con otra dirección | `El peer ya está registrado` |
 
+### `POST /peers/reconcile`
+Fuerza la reconciliación del anillo local con todos los peers conocidos. Cada
+peer consulta `GET /ring` de los demás y añade a su anillo los peers que no
+conocía. No sobrescribe direcciones de peers ya registrados.
+
+`200` → `{"ring_version": "...", "updated_from": ["peer2"], "peers": [...]}`
+
 ### Colocación
 Dos funciones, en un solo módulo:
 
