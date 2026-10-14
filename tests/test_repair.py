@@ -139,8 +139,8 @@ class RedSimulada:
                     raise requests.RequestException("error")
 
         if peer_id == PEER1:
-            path, _ = blocks.read_block(file_id, index)
-            return Respuesta(path.read_bytes(), 200)
+            datos, _ = blocks.read_block(file_id, index)
+            return Respuesta(datos, 200)
 
         datos = self.almacen.get((peer_id, file_id, index), b"")
         return Respuesta(datos, 200 if datos else 404)

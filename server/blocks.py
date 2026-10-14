@@ -13,7 +13,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
-from server import config
+from server import config, security
 from server.filesystem import resolve_path
 
 
@@ -121,35 +121,52 @@ async def save_block(
 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    # El bloque se acumula en memoria para poder cifrarlo entero: AES-GCM no es
+    # naturalmente incremental aquí, y el bloque está acotado por BLOCK_SIZE
+    # (como mucho unos MiB), así que cabe de sobra. La verificación de tamaño
+    # sigue cortando antes de agotar la memoria. El SHA-256 se calcula sobre el
+    # texto claro, igual que antes: la secuencia es claro -> SHA-256 -> cifrado.
     digest = hashlib.sha256()
+    plaintext = bytearray()
     written = 0
 
     try:
-        with destination.open("wb") as buffer:
-            async for chunk in chunks:
-                written += len(chunk)
+        async for chunk in chunks:
+            written += len(chunk)
 
-                # Segunda defensa: cubre al que miente en la cabecera y al que
-                # no manda ninguna longitud.
-                if written > limite:
-                    raise HTTPException(
-                        status_code=413,
-                        detail="El bloque supera el tamaño máximo permitido"
-                    )
+            # Segunda defensa: cubre al que miente en la cabecera y al que
+            # no manda ninguna longitud.
+            if written > limite:
+                raise HTTPException(
+                    status_code=413,
+                    detail="El bloque supera el tamaño máximo permitido"
+                )
 
-                digest.update(chunk)
-                buffer.write(chunk)
+            digest.update(chunk)
+            plaintext.extend(chunk)
 
         calculated = digest.hexdigest()
 
         if calculated != checksum:
-            # Se borra antes de responder: si un bloque corrupto se quedara en
-            # disco, el 409 de WORM impediría después reescribirlo y el bloque
-            # malo sería permanente.
+            # No se ha escrito nada todavía: el bloque corrupto no llega a
+            # disco. Antes se borraba el fichero a medias; ahora, al cifrar en
+            # memoria, basta con no escribirlo.
             raise HTTPException(
                 status_code=422,
                 detail="El checksum del bloque no coincide"
             )
+
+        # Cifrado en reposo: si hay clave, lo que toca el disco es el blob
+        # AES-GCM; si no, los bytes en claro (compatibilidad). En ningún caso
+        # se escribe un fichero intermedio sin cifrar.
+        a_disco = (
+            security.encrypt_block(bytes(plaintext))
+            if security.encryption_enabled()
+            else bytes(plaintext)
+        )
+
+        with destination.open("wb") as buffer:
+            buffer.write(a_disco)
 
     except HTTPException:
         destination.unlink(missing_ok=True)
@@ -164,13 +181,24 @@ async def save_block(
     }
 
 
-def read_block(file_id: str, index: int) -> tuple[Path, str]:
-    """La ruta, para servirla, y el checksum recalculado sobre lo que hay.
+def read_block(file_id: str, index: int) -> tuple[bytes, str]:
+    """Los bytes **en claro** del bloque y su checksum recalculado.
 
-    No se guarda en ningún sitio: recalcularlo cuesta una pasada de SHA-256 y
-    regala detección de corrupción en reposo. El peer no juzga, informa de lo
-    que leyó; quien verifica de punta a punta es el cliente, porque es el único
-    que tiene el checksum de referencia.
+    Devuelve bytes y no una ruta a propósito: cuando el cifrado está activo, el
+    fichero en disco es un criptograma, y servir esa ruta tal cual daría al
+    cliente basura. El descifrado ocurre aquí, en memoria, y jamás se escribe
+    una copia en claro al disco —ni siquiera temporal—, que es la propiedad que
+    el RNF6 exige del cifrado en reposo.
+
+    La secuencia en lectura es: leer del disco -> descifrar (AES-GCM valida el
+    tag, detectando manipulación) -> SHA-256 sobre el claro -> devolver. El
+    checksum no se guarda: recalcularlo regala además la detección de
+    corrupción en reposo que ya existía. El peer informa de lo que leyó; quien
+    compara contra el checksum de referencia es el cliente.
+
+    Un bloque sin cifrar (escrito antes de activar la clave, o con el cifrado
+    apagado) se lee igual: `decrypt_block` lo reconoce por la ausencia del
+    magic y lo devuelve tal cual.
     """
     path = block_path(file_id, index)
 
@@ -180,13 +208,11 @@ def read_block(file_id: str, index: int) -> tuple[Path, str]:
             detail="El bloque no existe"
         )
 
-    digest = hashlib.sha256()
+    blob = path.read_bytes()
+    plaintext = security.decrypt_block(blob)
+    checksum = hashlib.sha256(plaintext).hexdigest()
 
-    with path.open("rb") as buffer:
-        for chunk in iter(lambda: buffer.read(CHUNK_SIZE), b""):
-            digest.update(chunk)
-
-    return path, digest.hexdigest()
+    return plaintext, checksum
 
 
 def block_exists(file_id: str, index: int) -> bool:

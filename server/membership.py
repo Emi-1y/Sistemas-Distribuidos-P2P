@@ -8,10 +8,33 @@ separación que hay entre `filesystem.py` y `main.py`.
 import httpx
 from fastapi import HTTPException
 
-from server import config, ring
+from server import config, ring, security
 
 
 TIMEOUT = 2.0
+
+
+def _peer_request(method: str, url: str, **kwargs):
+    """Llamada peer↔peer con X-Peer-Token y verificación TLS centralizados.
+
+    Reúne en un punto lo que todas las llamadas internas de este módulo deben
+    hacer: añadir el token de peer y verificar el certificado del destino. Las
+    cabeceras explícitas que pase el llamador (p. ej. X-Forwarded-By) se
+    conservan y se les suma el token.
+
+    Despacha a `httpx.get`/`httpx.post` (y no a `httpx.request`) para seguir el
+    mismo punto de corte que ya usaban los tests al sustituir la red: el método
+    concreto es el que esos dobles interceptan.
+    """
+    kwargs["headers"] = security.peer_headers(kwargs.get("headers"))
+    kwargs.setdefault("timeout", TIMEOUT)
+
+    if url.startswith("https"):
+        kwargs["verify"] = security.httpx_verify()
+
+    funcion = getattr(httpx, method.lower())
+
+    return funcion(url, **kwargs)
 
 
 def join(peer_id: str, address: str, forwarded: bool) -> dict:
@@ -108,11 +131,11 @@ def _send_join(target: str, payload: dict, headers: dict) -> dict | None:
     Reintentar y reconciliar anillos divergentes es hito 3.
     """
     try:
-        respuesta = httpx.post(
+        respuesta = _peer_request(
+            "POST",
             f"{target}/peers/join",
             json=payload,
             headers=headers,
-            timeout=TIMEOUT
         )
 
         if respuesta.status_code == 200:
@@ -132,10 +155,7 @@ def health_check_peer(peer_id: str) -> bool:
         return False
 
     try:
-        respuesta = httpx.get(
-            f"{address}/health",
-            timeout=TIMEOUT
-        )
+        respuesta = _peer_request("GET", f"{address}/health")
         return respuesta.status_code == 200
     except httpx.HTTPError:
         return False
@@ -172,10 +192,7 @@ def reconcile_with(peer_id: str) -> bool:
         return False
 
     try:
-        respuesta = httpx.get(
-            f"{address}/ring",
-            timeout=TIMEOUT
-        )
+        respuesta = _peer_request("GET", f"{address}/ring")
 
         if respuesta.status_code != 200:
             return False

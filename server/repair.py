@@ -14,19 +14,59 @@ import hashlib
 
 import httpx
 
-from server import blocks, config, metadata, ring
+from server import blocks, config, metadata, ring, security
 
 
 TIMEOUT = 10.0
 
 
-def repair(path: str) -> dict:
+def _peer_get(url: str):
+    kwargs = {"timeout": TIMEOUT, "headers": security.peer_headers()}
+    if url.startswith("https"):
+        kwargs["verify"] = security.httpx_verify()
+    return httpx.get(url, **kwargs)
+
+
+def _peer_head(url: str):
+    kwargs = {"timeout": TIMEOUT, "headers": security.peer_headers()}
+    if url.startswith("https"):
+        kwargs["verify"] = security.httpx_verify()
+    return httpx.head(url, **kwargs)
+
+
+def _peer_put(url: str, data, headers):
+    kwargs = {
+        "timeout": TIMEOUT,
+        "data": data,
+        "headers": security.peer_headers(headers),
+    }
+    if url.startswith("https"):
+        kwargs["verify"] = security.httpx_verify()
+    return httpx.put(url, **kwargs)
+
+
+def repair(path: str, user: str | None = None, internal: bool = False) -> dict:
     """Repara las réplicas de un archivo confirmado.
 
     Devuelve un resumen de los cambios realizados. Si el archivo ya tiene
     todas sus réplicas, no mueve ningún byte.
+
+    Reparar es una operación sensible sobre el archivo: solo el propietario
+    puede lanzarla. `internal=True` la marca como reparación del sistema (el
+    heartbeat automático tras caerse un peer), que no tiene usuario y actúa en
+    nombre del sistema para preservar la durabilidad.
     """
-    entrada = metadata.lookup(path)
+    # La entrada se lee sin filtro de lectura: la autorización de reparación es
+    # de escritura, y se comprueba a continuación de forma explícita para dar
+    # un 403 claro.
+    entrada = metadata.get_entry(path)
+
+    if not internal and not security.can_write(entrada.get("owner"), user):
+        raise metadata.HTTPException(
+            status_code=403,
+            detail="No autorizado a reparar este archivo"
+        )
+
     file_id = entrada["file_id"]
     replicas_esperadas = entrada.get("replication_factor", config.REPLICAS)
     cambios = []
@@ -95,10 +135,7 @@ def _peer_tiene_bloque(peer_id: str, file_id: str, index: int) -> bool:
         return False
 
     try:
-        respuesta = httpx.head(
-            f"{address}/blocks/{file_id}/{index}",
-            timeout=TIMEOUT
-        )
+        respuesta = _peer_head(f"{address}/blocks/{file_id}/{index}")
         return respuesta.status_code == 200
     except httpx.HTTPError:
         return False
@@ -141,10 +178,7 @@ def _copiar_bloque(
         ) from exc
 
     try:
-        respuesta = httpx.get(
-            f"{address_fuente}/blocks/{file_id}/{index}",
-            timeout=TIMEOUT
-        )
+        respuesta = _peer_get(f"{address_fuente}/blocks/{file_id}/{index}")
         respuesta.raise_for_status()
     except httpx.HTTPError as exc:
         raise metadata.HTTPException(
@@ -161,11 +195,10 @@ def _copiar_bloque(
         )
 
     try:
-        respuesta = httpx.put(
+        respuesta = _peer_put(
             f"{address_destino}/blocks/{file_id}/{index}",
             data=datos,
             headers={"X-Block-Checksum": checksum_esperado},
-            timeout=TIMEOUT
         )
         respuesta.raise_for_status()
     except httpx.HTTPError as exc:
@@ -175,11 +208,13 @@ def _copiar_bloque(
         ) from exc
 
 
-def repair_all() -> dict:
+def repair_all(user: str | None = None) -> dict:
     """Repara todas las entradas confirmadas que le tocan a este peer.
 
     Devuelve un resumen agregado de los archivos tocados y las réplicas
-    restauradas.
+    restauradas. Solo toca los archivos que `user` puede escribir; los de otros
+    propietarios se saltan en silencio (el 403 por archivo no debe abortar el
+    barrido entero).
     """
     archivos = metadata.list_all_files()
     reparados = 0
@@ -187,8 +222,14 @@ def repair_all() -> dict:
     detalles = []
 
     for entrada in archivos:
+        if (
+            security.user_auth_enabled()
+            and not security.can_write(entrada.get("owner"), user)
+        ):
+            continue
+
         try:
-            resultado = repair(entrada["path"])
+            resultado = repair(entrada["path"], user=user)
         except metadata.HTTPException:
             # Un archivo que no se puede reparar no debe detener los demás.
             continue
@@ -230,7 +271,9 @@ def repair_for_peer(fallen_peer_id: str) -> dict:
             continue
 
         try:
-            resultado = repair(entrada["path"])
+            # Reparación del sistema: sin usuario, actúa en nombre del sistema
+            # para preservar la durabilidad tras caerse un peer.
+            resultado = repair(entrada["path"], internal=True)
         except metadata.HTTPException:
             continue
 

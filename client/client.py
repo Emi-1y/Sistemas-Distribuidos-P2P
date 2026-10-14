@@ -1,5 +1,7 @@
 # HACEMOS Y RECIIBIMOS SOLICITUDES HTTP
 
+import os
+
 from client.commands import (
     ls,
     mkdir,
@@ -28,6 +30,15 @@ def main():
         return
 
     print(f"Conectado a {peer}")
+
+    # La identidad del cliente se toma del entorno (DFSHA_USER) y se envía sola
+    # en cada comando. Mostrarla aquí evita operar sin darse cuenta como un
+    # usuario distinto del esperado.
+    usuario = os.environ.get("DFSHA_USER", "").strip()
+
+    if usuario:
+        print(f"Autenticado como {usuario}")
+
     print()
 
     while True:

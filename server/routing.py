@@ -8,7 +8,7 @@ prueba sin levantar nada, y cuando algo falla aquí se sabe que es la red.
 import httpx
 from fastapi import HTTPException
 
-from server import config, ring
+from server import config, ring, security
 
 
 TIMEOUT = 5.0
@@ -28,7 +28,8 @@ def delegate(
     method: str,
     url: str,
     params: dict | None = None,
-    json: dict | None = None
+    json: dict | None = None,
+    user: str | None = None
 ) -> dict | None:
     """`None` si la clave es mía; si no, la respuesta del dueño, tal cual.
 
@@ -37,6 +38,11 @@ def delegate(
     que el reenvío hizo su trabajo. El `508` es solo para la que llega marcada
     y **tampoco** es mía: con anillos que pudieron divergir, sin ese corte dos
     peers se mandarían la misma petición indefinidamente.
+
+    `user` es la identidad del cliente que originó la petición. Viaja en el
+    reenvío para que el peer dueño pueda aplicar la autorización por owner; se
+    acredita junto con el X-Peer-Token, así que el destino la cree sin volver a
+    pedir el token de usuario.
     """
     if is_mine(key):
         return None
@@ -47,7 +53,7 @@ def delegate(
             detail="Bucle de enrutamiento detectado"
         )
 
-    return _relay(owner_of(key), method, url, params, json)
+    return _relay(owner_of(key), method, url, params, json, user)
 
 
 def call_owner(
@@ -57,6 +63,7 @@ def call_owner(
     *,
     params: dict | None = None,
     json: dict | None = None,
+    user: str | None = None,
     local
 ):
     """La salida obligada: se ejecuta aquí si la clave es mía, o en el dueño.
@@ -67,7 +74,7 @@ def call_owner(
     if is_mine(key):
         return local()
 
-    return _relay(owner_of(key), method, url, params, json)
+    return _relay(owner_of(key), method, url, params, json, user)
 
 
 def notify(
@@ -89,11 +96,22 @@ def notify(
         pass
 
 
-def _headers() -> dict:
-    return {"X-Forwarded-By": config.PEER_ID}
+def _headers(user: str | None = None) -> dict:
+    """Cabeceras de un reenvío entre peers.
+
+    `X-Forwarded-By` marca el salto para cortar bucles; el `X-Peer-Token` lo
+    pone `security.peer_headers` cuando hay auth, y la identidad del cliente
+    original viaja en `X-User` para que el dueño autorice por owner.
+    """
+    base = {"X-Forwarded-By": config.PEER_ID}
+
+    if user is not None:
+        base["X-User"] = user
+
+    return security.peer_headers(base)
 
 
-def _relay(peer_id: str, method: str, url: str, params, json) -> dict:
+def _relay(peer_id: str, method: str, url: str, params, json, user=None) -> dict:
     """Habla con el dueño y devuelve su respuesta sin reinterpretarla.
 
     Si el dueño dice `409 El archivo ya existe`, el cliente ve exactamente eso.
@@ -101,7 +119,7 @@ def _relay(peer_id: str, method: str, url: str, params, json) -> dict:
     """
     try:
         respuesta = _send(
-            ring.address_of(peer_id), method, url, params, json, _headers()
+            ring.address_of(peer_id), method, url, params, json, _headers(user)
         )
     except (httpx.HTTPError, KeyError):
         raise HTTPException(
@@ -131,5 +149,6 @@ def _send(address: str, method: str, url: str, params, json, headers):
         params=params,
         json=json,
         headers=headers,
-        timeout=TIMEOUT
+        timeout=TIMEOUT,
+        verify=security.httpx_verify() if address.startswith("https") else True
     )

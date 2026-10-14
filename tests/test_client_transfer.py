@@ -296,15 +296,15 @@ class PeerReal:
     def _ruta(self, url):
         return urlsplit(url).path
 
-    def get(self, url, params=None, **kwargs):
+    def get(self, url, params=None, headers=None, **kwargs):
         self.llamadas.append(("GET", self._ruta(url)))
 
-        return self._cliente.get(self._ruta(url), params=params)
+        return self._cliente.get(self._ruta(url), params=params, headers=headers)
 
-    def post(self, url, json=None, **kwargs):
+    def post(self, url, json=None, headers=None, **kwargs):
         self.llamadas.append(("POST", self._ruta(url)))
 
-        return self._cliente.post(self._ruta(url), json=json)
+        return self._cliente.post(self._ruta(url), json=json, headers=headers)
 
     def put(self, url, data=None, headers=None, **kwargs):
         ruta = self._ruta(url)
@@ -315,10 +315,10 @@ class PeerReal:
 
         return self._cliente.put(ruta, content=data, headers=headers)
 
-    def delete(self, url, params=None, **kwargs):
+    def delete(self, url, params=None, headers=None, **kwargs):
         self.llamadas.append(("DELETE", self._ruta(url)))
 
-        return self._cliente.delete(self._ruta(url), params=params)
+        return self._cliente.delete(self._ruta(url), params=params, headers=headers)
 
 
 @pytest.fixture

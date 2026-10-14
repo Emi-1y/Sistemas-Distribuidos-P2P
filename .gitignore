@@ -110,3 +110,16 @@ dist/
 # =========================================================
 
 docker-compose.override.yml
+
+# =========================================================
+# Seguridad / RNF6 — certificados y claves TLS
+# Nunca subir material criptográfico ni secretos reales a Git.
+# =========================================================
+
+certs/
+*.pem
+*.key
+*.crt
+*.csr
+*.srl
+# El CA de desarrollo tampoco: se regenera con scripts/generate_certs.sh
