@@ -8,8 +8,8 @@ from server.main import app
 
 
 @pytest.fixture(autouse=True)
-def anillo_del_proceso(monkeypatch):
-    """Un anillo con un solo peer, sea cual sea el entorno del proceso.
+def entorno_de_tests(monkeypatch):
+    """Aísla los tests del entorno del proceso.
 
     `ring.LOCAL` se construye al importar, con lo que diga `DFSHA_BOOTSTRAP`.
     En el anfitrion no hay ninguna variable puesta y sale un anillo de un peer;
@@ -20,14 +20,18 @@ def anillo_del_proceso(monkeypatch):
     anfitrion y fallaba dentro una vez de cada tres, segun donde cayera un
     `file_id` que se sortea.
 
-    Los tests que necesitan varios peers montan el suyo y este no les estorba.
-    Lo que hace es quitar de en medio el entorno del proceso, que no es parte
-    de lo que ninguno de ellos afirma.
+    El factor de réplica también viene del entorno: en el contenedor vale 2,
+    pero los tests de metadata se escribieron para un factor de 1. Fijarlo
+    aquí hace que la suite sea reproducible en cualquier entorno.
+
+    Los tests que necesitan varios peers o un factor distinto montan el suyo y
+    este no les estorba.
     """
     solo = ring.Ring()
     solo.add_peer(config.PEER_ID, config.ADDRESS)
 
     monkeypatch.setattr(ring, "LOCAL", solo)
+    monkeypatch.setattr(config, "REPLICAS", 1)
 
 
 @pytest.fixture

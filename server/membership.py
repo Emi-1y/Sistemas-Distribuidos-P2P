@@ -8,10 +8,33 @@ separación que hay entre `filesystem.py` y `main.py`.
 import httpx
 from fastapi import HTTPException
 
-from server import config, ring
+from server import config, ring, security
 
 
 TIMEOUT = 2.0
+
+
+def _peer_request(method: str, url: str, **kwargs):
+    """Llamada peer↔peer con X-Peer-Token y verificación TLS centralizados.
+
+    Reúne en un punto lo que todas las llamadas internas de este módulo deben
+    hacer: añadir el token de peer y verificar el certificado del destino. Las
+    cabeceras explícitas que pase el llamador (p. ej. X-Forwarded-By) se
+    conservan y se les suma el token.
+
+    Despacha a `httpx.get`/`httpx.post` (y no a `httpx.request`) para seguir el
+    mismo punto de corte que ya usaban los tests al sustituir la red: el método
+    concreto es el que esos dobles interceptan.
+    """
+    kwargs["headers"] = security.peer_headers(kwargs.get("headers"))
+    kwargs.setdefault("timeout", TIMEOUT)
+
+    if url.startswith("https"):
+        kwargs["verify"] = security.httpx_verify()
+
+    funcion = getattr(httpx, method.lower())
+
+    return funcion(url, **kwargs)
 
 
 def join(peer_id: str, address: str, forwarded: bool) -> dict:
@@ -108,11 +131,11 @@ def _send_join(target: str, payload: dict, headers: dict) -> dict | None:
     Reintentar y reconciliar anillos divergentes es hito 3.
     """
     try:
-        respuesta = httpx.post(
+        respuesta = _peer_request(
+            "POST",
             f"{target}/peers/join",
             json=payload,
             headers=headers,
-            timeout=TIMEOUT
         )
 
         if respuesta.status_code == 200:
@@ -122,3 +145,88 @@ def _send_join(target: str, payload: dict, headers: dict) -> dict | None:
         pass
 
     return None
+
+
+def health_check_peer(peer_id: str) -> bool:
+    """True si el peer responde a /health."""
+    try:
+        address = ring.address_of(peer_id)
+    except KeyError:
+        return False
+
+    try:
+        respuesta = _peer_request("GET", f"{address}/health")
+        return respuesta.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def health_check_all() -> list[str]:
+    """Devuelve la lista de peers del anillo que no responden a /health.
+
+    Se excluye a sí mismo: un peer no se marca como caído a sí mismo.
+    """
+    caidos = []
+
+    for peer in ring.LOCAL.peers():
+        peer_id = peer["peer_id"]
+
+        if peer_id == config.PEER_ID:
+            continue
+
+        if not health_check_peer(peer_id):
+            caidos.append(peer_id)
+
+    return caidos
+
+
+def reconcile_with(peer_id: str) -> bool:
+    """Compara el anillo local con el de otro peer y absorbe lo que le falta.
+
+    Devuelve True si el anillo local cambió. No sobrescribe direcciones de peers
+    ya conocidos: solo añade peers que el local no tenía.
+    """
+    try:
+        address = ring.address_of(peer_id)
+    except KeyError:
+        return False
+
+    try:
+        respuesta = _peer_request("GET", f"{address}/ring")
+
+        if respuesta.status_code != 200:
+            return False
+
+        datos = respuesta.json()
+    except httpx.HTTPError:
+        return False
+
+    cambio = False
+
+    for peer in datos.get("peers", []):
+        try:
+            ring.LOCAL.address_of(peer["peer_id"])
+        except KeyError:
+            ring.LOCAL.add_peer(peer["peer_id"], peer["address"])
+            cambio = True
+
+    return cambio
+
+
+def reconcile_all() -> list[str]:
+    """Reconcilia el anillo con todos los peers conocidos.
+
+    Devuelve la lista de peers desde los que se aprendió algo nuevo.
+    """
+    actualizados = []
+
+    for peer in ring.LOCAL.peers():
+        peer_id = peer["peer_id"]
+
+        if peer_id == config.PEER_ID:
+            continue
+
+        if reconcile_with(peer_id):
+            actualizados.append(peer_id)
+
+    return actualizados

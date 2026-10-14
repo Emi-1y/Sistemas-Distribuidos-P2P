@@ -1,5 +1,7 @@
 # HACEMOS Y RECIIBIMOS SOLICITUDES HTTP
 
+import os
+
 from client.commands import (
     ls,
     mkdir,
@@ -7,6 +9,8 @@ from client.commands import (
     rm,
     send,
     receive,
+    repair,
+    repair_all,
     change_directory,
     connect
 )
@@ -26,6 +30,15 @@ def main():
         return
 
     print(f"Conectado a {peer}")
+
+    # La identidad del cliente se toma del entorno (DFSHA_USER) y se envía sola
+    # en cada comando. Mostrarla aquí evita operar sin darse cuenta como un
+    # usuario distinto del esperado.
+    usuario = os.environ.get("DFSHA_USER", "").strip()
+
+    if usuario:
+        print(f"Autenticado como {usuario}")
+
     print()
 
     while True:
@@ -90,6 +103,16 @@ def main():
                 continue
 
             receive(current_path, args[0])
+
+        elif command == "repair":
+            if len(args) != 1:
+                print("Uso: repair <archivo>")
+                continue
+
+            repair(current_path, args[0])
+
+        elif command == "repair-all":
+            repair_all()
 
         elif command == "cd":
             if len(args) != 1:

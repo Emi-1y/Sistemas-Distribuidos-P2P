@@ -13,7 +13,7 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
-from server import metadata, ring
+from server import config, metadata, ring
 from server.ring import Ring
 
 
@@ -274,6 +274,21 @@ def test_el_reparto_en_bloques_en_los_bordes(meta, bloque_pequeno, size, tamanos
 
     assert [b["size"] for b in entrada["blocks"]] == tamanos
 
+def test_allocate_incluye_replicas_y_destinos_alternativos(
+    meta, anillo_de_tres, bloque_pequeno, monkeypatch
+):
+    monkeypatch.setattr(config, "REPLICAS", 2)
+    crear_directorio("/universidad")
+
+    entrada = metadata.allocate("/universidad/tarea.pdf", 600)
+
+    assert entrada["replication_factor"] == 2
+
+    for bloque in entrada["blocks"]:
+        assert len(bloque["peers"]) == 2
+        assert len(set(bloque["peers"])) == 2
+        assert len(bloque["candidates"]) == 3
+        assert set(bloque["peers"]).issubset(set(bloque["candidates"]))
 
 def test_una_entrada_pendiente_no_existe_para_nadie(meta, bloque_pequeno):
     """AC-02: hasta el commit, ni ls ni lookup la ven."""
@@ -440,7 +455,7 @@ def test_repetir_un_peer_no_cuenta_como_replicar(
     meta, anillo_de_tres, bloque_pequeno, monkeypatch
 ):
     """Se cuentan peers distintos: ["peer2", "peer2"] no son dos replicas."""
-    monkeypatch.setattr(metadata, "REPLICAS", 2)
+    monkeypatch.setattr(config, "REPLICAS", 2)
     crear_directorio("/universidad")
     entrada = metadata.allocate("/universidad/tarea.pdf", 600)
 
@@ -459,7 +474,7 @@ def test_el_factor_de_replica_subido_a_tres(
     meta, anillo_de_tres, bloque_pequeno, monkeypatch
 ):
     """El gancho del hito 3, probado y no prometido: sin tocar codigo."""
-    monkeypatch.setattr(metadata, "REPLICAS", 3)
+    monkeypatch.setattr(config, "REPLICAS", 3)
     crear_directorio("/universidad")
 
     entrada = metadata.allocate("/universidad/tarea.pdf", 600)

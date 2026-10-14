@@ -1,0 +1,85 @@
+# Overlay de TLS para el despliegue RNF6 completo.
+#
+# Se usa SOBRE docker-compose.yml:
+#
+#   ./scripts/generate_certs.sh ./certs peer1 peer2 peer3
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --wait
+#
+# Enciende HTTPS real cliente↔peer y peer↔peer, con DFSHA_REQUIRE_TLS=true (sin
+# fallback a HTTP) sobre la base que ya trae DFSHA_REQUIRE_AUTH=true, auth de
+# usuario, capabilities y cifrado en reposo. Es el modo que representa el RNF6.
+#
+# Qué cambia respecto a la base:
+#   - El bootstrap y cada DFSHA_ADDRESS pasan a https://
+#   - Se exige TLS (DFSHA_REQUIRE_TLS=true) y se montan los certificados
+#   - Cada peer arranca con `python -m server`, que lee cert/clave de la config
+#   - El healthcheck interroga por HTTPS verificando contra el CA local
+#   - El cliente verifica el certificado con el mismo CA
+#
+# Los certificados viven en ./certs (gitignored). El contenedor los ve en
+# /certs, de solo lectura.
+
+x-tls-entorno: &tls-entorno
+  DFSHA_BOOTSTRAP: peer1=https://peer1:9001,peer2=https://peer2:9002,peer3=https://peer3:9003
+  DFSHA_REQUIRE_TLS: "true"
+  DFSHA_TLS_CA: /certs/ca.crt
+
+services:
+  peer1:
+    environment:
+      <<: *tls-entorno
+      DFSHA_ADDRESS: https://peer1:9001
+      DFSHA_TLS_CERT: /certs/peer1.crt
+      DFSHA_TLS_KEY: /certs/peer1.key
+    command: python -m server
+    volumes:
+      - datos-peer1:/datos
+      - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,ssl,urllib.request; ctx=ssl.create_default_context(cafile='/certs/ca.crt'); urllib.request.urlopen(os.environ['DFSHA_ADDRESS']+'/health', context=ctx).read()"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  peer2:
+    environment:
+      <<: *tls-entorno
+      DFSHA_ADDRESS: https://peer2:9002
+      DFSHA_TLS_CERT: /certs/peer2.crt
+      DFSHA_TLS_KEY: /certs/peer2.key
+    command: python -m server
+    volumes:
+      - datos-peer2:/datos
+      - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,ssl,urllib.request; ctx=ssl.create_default_context(cafile='/certs/ca.crt'); urllib.request.urlopen(os.environ['DFSHA_ADDRESS']+'/health', context=ctx).read()"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  peer3:
+    environment:
+      <<: *tls-entorno
+      DFSHA_ADDRESS: https://peer3:9003
+      DFSHA_TLS_CERT: /certs/peer3.crt
+      DFSHA_TLS_KEY: /certs/peer3.key
+    command: python -m server
+    volumes:
+      - datos-peer3:/datos
+      - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,ssl,urllib.request; ctx=ssl.create_default_context(cafile='/certs/ca.crt'); urllib.request.urlopen(os.environ['DFSHA_ADDRESS']+'/health', context=ctx).read()"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  cliente:
+    environment:
+      <<: *tls-entorno
+      DFSHA_USER: alice
+      DFSHA_USER_TOKEN: demo-alice-token
+    volumes:
+      - ./certs:/certs:ro

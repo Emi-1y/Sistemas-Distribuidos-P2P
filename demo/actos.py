@@ -31,6 +31,32 @@ from server import ring
 MARCA = "X"
 VACIO = "·"
 
+
+def _cab():
+    """Cabeceras de las peticiones directas de la demo.
+
+    La demo hace algunas peticiones a mano (sondear bloques, leer el anillo)
+    además de usar el CLI. Cuando la seguridad está activada necesitan
+    acreditarse: la identidad del usuario para los endpoints de cliente, y el
+    X-Peer-Token para sondear bloques directamente —la demo es una herramienta
+    de diagnóstico dentro de la red de confianza, así que usa el token de peer,
+    que le da acceso a cualquier bloque igual que a la reparación—.
+
+    Si no hay seguridad configurada, no añade nada y la demo se comporta como
+    siempre.
+    """
+    cabeceras = dict(commands.auth_headers())
+
+    token = os.environ.get("DFSHA_PEER_TOKEN", "").strip()
+    if token:
+        cabeceras["X-Peer-Token"] = token
+
+    return cabeceras
+
+
+def _verify():
+    return commands.tls_verify()
+
 # El directorio de la demo y los dos archivos que se suben: uno para el reparto
 # y la lectura, otro para el ciclo del fallo. Los dos cuelgan del mismo
 # directorio a proposito: el acto 4 apaga todo menos su dueno, y para que el
@@ -91,7 +117,11 @@ def _tiene(address: str, file_id: str, indice: int) -> bool:
     dibujo: no contestar y contestar 404 se ven igual desde fuera, y el acto 4
     apaga peers a proposito."""
     try:
-        respuesta = requests.get(f"{address}/blocks/{file_id}/{indice}")
+        respuesta = requests.get(
+            f"{address}/blocks/{file_id}/{indice}",
+            headers=_cab(),
+            verify=_verify(),
+        )
     except requests.RequestException:
         return False
 
@@ -113,18 +143,19 @@ def defectos(reparto: dict[int, list[str]], segun_lookup, peers) -> list[str]:
 
         if not tiene:
             problemas.append(f"el bloque {indice} no lo sirve ningun peer")
-        elif len(tiene) > 1:
-            # Con factor de replica 1, dos tenedores no son redundancia: son
-            # una escritura que fue a parar donde no le tocaba.
-            problemas.append(
-                f"el bloque {indice} lo sirven {len(tiene)} peers: {', '.join(tiene)}"
-            )
-        elif tiene != esperado:
+        elif set(tiene) != set(esperado):
             # El enlace entre los dos planos: los bytes estan donde los
             # metadatos dicen, o el `receive` de otro dia no los encontrara.
             problemas.append(
-                f"el bloque {indice} lo sirve {tiene[0]} y `lookup` dice "
+                f"el bloque {indice} lo sirven {', '.join(tiene)} y `lookup` dice "
                 f"{', '.join(esperado) or 'nadie'}"
+            )
+        elif len(tiene) != len(esperado):
+            # Mismo conjunto pero con repeticiones: ['peer2', 'peer2'] no son
+            # dos replicas distintas.
+            problemas.append(
+                f"el bloque {indice} tiene {len(tiene)} entradas pero "
+                f"`lookup` espera {len(esperado)} distintas"
             )
 
     for peer_id in peers:
@@ -217,6 +248,8 @@ def entrada_de(archivo: str):
     respuesta = requests.get(
         f"{commands.PEER_URL}/files/lookup",
         params={"path": f"{DIRECTORIO}/{archivo}"},
+        headers=_cab(),
+        verify=_verify(),
     )
 
     return respuesta.json() if respuesta.status_code == 200 else respuesta.status_code
@@ -237,8 +270,12 @@ def convergencia() -> bool:
     versiones = {}
 
     for peer in ring.LOCAL.peers():
-        salud = requests.get(f"{peer['address']}/health").json()
-        anillo = requests.get(f"{peer['address']}/ring").json()
+        salud = requests.get(
+            f"{peer['address']}/health", headers=_cab(), verify=_verify()
+        ).json()
+        anillo = requests.get(
+            f"{peer['address']}/ring", headers=_cab(), verify=_verify()
+        ).json()
         miembros = [otro["peer_id"] for otro in anillo["peers"]]
 
         versiones[peer["peer_id"]] = (salud["ring_version"], tuple(miembros))
@@ -459,7 +496,8 @@ def fallo_envio() -> bool:
             return False
 
         items = requests.get(
-            f"{commands.PEER_URL}/files", params={"path": DIRECTORIO}
+            f"{commands.PEER_URL}/files", params={"path": DIRECTORIO},
+            headers=_cab(), verify=_verify(),
         ).json()["items"]
         nombres = [item["name"] for item in items]
 
@@ -542,7 +580,8 @@ def fallo_rm(file_id: str | None = None) -> bool:
     # Y el nombre vuelve a estar libre, que es la otra mitad de lo que el `rm`
     # promete cuando el CLI lo sugiere.
     items = requests.get(
-        f"{commands.PEER_URL}/files", params={"path": DIRECTORIO}
+        f"{commands.PEER_URL}/files", params={"path": DIRECTORIO},
+        headers=_cab(), verify=_verify(),
     ).json()["items"]
 
     if ARCHIVO_DEL_FALLO in [item["name"] for item in items]:

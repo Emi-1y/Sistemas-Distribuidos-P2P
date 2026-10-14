@@ -15,16 +15,12 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from server import config, ring
+from server import config, ring, security
 from server.filesystem import resolve_path
 
 
 # El plano de metadatos: un árbol propio, hermano del de bloques.
 METADATA_ROOT = config.STORAGE_ROOT / "metadata"
-
-# El factor de réplica, en un solo sitio. Subirlo a 3 no exige tocar nada más:
-# `allocate` planea tres peers por bloque y `commit` exige tres confirmaciones.
-REPLICAS = 1
 
 METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -186,10 +182,15 @@ def _bucket_of_parent(path: str, missing: str) -> tuple[dict, str]:
 # Directorios
 # ---------------------------------------------------------------------------
 
-def list_entries(directory: str) -> list[dict]:
+def list_entries(directory: str, user: str | None = None) -> list[dict]:
     """Lo que cuelga del directorio: subdirectorios y archivos confirmados.
 
     Las entradas pendientes no salen. Hasta el commit, un archivo no existe.
+
+    Respeta el modelo de acceso: un archivo solo aparece si `user` puede
+    leerlo. Los directorios se listan siempre —son el esqueleto del espacio de
+    nombres, compartido—; la protección por owner es a nivel de archivo, que es
+    lo que el RNF6 pide como mínimo. Sin auth, `can_read` deja ver todo.
     """
     ruta = normalize(directory)
     bucket = read_bucket(ruta)
@@ -209,9 +210,10 @@ def list_entries(directory: str) -> list[dict]:
             items.append({"name": nombre, "type": "directory", "size": None})
 
         elif entrada.get("state") == "committed":
-            items.append(
-                {"name": nombre, "type": "file", "size": entrada["size"]}
-            )
+            if security.can_read(entrada.get("owner"), user):
+                items.append(
+                    {"name": nombre, "type": "file", "size": entrada["size"]}
+                )
 
     return items
 
@@ -295,12 +297,16 @@ def check_allocate(path: str, size: int) -> None:
         )
 
 
-def allocate(path: str, size: int) -> dict:
+def allocate(path: str, size: int, owner: str | None = None) -> dict:
     """Reserva la ruta y devuelve el plan de bloques, en estado `pending`.
 
     El plan dice en qué peers *debería* quedar cada bloque. Es una intención:
     el almacén de bloques acepta lo que le manden sin comprobar si le tocaba,
     así que el hecho solo lo conocerá el cliente, y lo reportará en el commit.
+
+    `owner` es el usuario que crea el archivo; queda grabado en la entrada y es
+    la base de la autorización por propietario. Con auth desactivada es None y
+    la entrada se comporta como pública.
     """
     check_allocate(path, size)
 
@@ -323,11 +329,17 @@ def allocate(path: str, size: int) -> dict:
     while restante > 0:
         trozo = min(block_size, restante)
 
+        candidatos = ring.choose_nodes(
+            f"{file_id}:{index}",
+            len(ring.LOCAL.peers())
+        )
+
         bloques.append({
             "index": index,
             "size": trozo,
             "checksum": None,
-            "peers": ring.choose_nodes(f"{file_id}:{index}", REPLICAS)
+            "peers": candidatos[:config.REPLICAS],
+            "candidates": candidatos
         })
 
         restante -= trozo
@@ -338,6 +350,8 @@ def allocate(path: str, size: int) -> dict:
         "file_id": file_id,
         "size": size,
         "block_size": block_size,
+        "replication_factor": config.REPLICAS,
+        "owner": owner,
         "state": "pending",
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "blocks": bloques
@@ -349,12 +363,15 @@ def allocate(path: str, size: int) -> dict:
     return entrada
 
 
-def commit(path: str, file_id: str, blocks: list[dict]) -> dict:
+def commit(path: str, file_id: str, blocks: list[dict], user: str | None = None) -> dict:
     """Confirma la entrada con lo que el cliente reporta.
 
     Se guardan los peers **reportados**, no los planeados, porque el plan era
     una intención. Y por eso hay que validarlos: si el cliente pudiera escribir
     cualquier `peer_id`, la metadata seguiría mintiendo, solo que con más pasos.
+
+    Solo el owner de la entrada pendiente puede confirmarla: confirmar es la
+    última mitad de la escritura que empezó en `allocate`.
     """
     ruta = normalize(path)
     bucket, nombre = _bucket_of_parent(ruta, "El archivo no existe")
@@ -368,6 +385,12 @@ def commit(path: str, file_id: str, blocks: list[dict]) -> dict:
         raise HTTPException(
             status_code=404,
             detail="El archivo no existe"
+        )
+
+    if not security.can_write(entrada.get("owner"), user):
+        raise HTTPException(
+            status_code=403,
+            detail="No autorizado a modificar este archivo"
         )
 
     if entrada["state"] == "committed":
@@ -404,7 +427,7 @@ def commit(path: str, file_id: str, blocks: list[dict]) -> dict:
         # Peers **distintos**: repetir uno no es replicar.
         distintos = list(dict.fromkeys(confirmado["peers"]))
 
-        if len(distintos) < REPLICAS:
+        if len(distintos) < config.REPLICAS:
             raise HTTPException(
                 status_code=422,
                 detail="Confirmación de bloques incompleta"
@@ -419,8 +442,14 @@ def commit(path: str, file_id: str, blocks: list[dict]) -> dict:
     return entrada
 
 
-def lookup(path: str) -> dict:
-    """La entrada completa de un archivo confirmado."""
+def get_entry(path: str) -> dict:
+    """La entrada confirmada, SIN comprobar permisos de lectura.
+
+    La usan internamente quienes van a aplicar su propia autorización —la
+    reparación comprueba escritura, no lectura— o la que no tiene usuario, como
+    la reparación del sistema. `lookup` la envuelve con el control de acceso de
+    cliente.
+    """
     ruta = normalize(path)
     bucket, nombre = _bucket_of_parent(ruta, "El archivo no existe")
     entrada = bucket["entries"].get(nombre)
@@ -438,11 +467,33 @@ def lookup(path: str) -> dict:
     return entrada
 
 
-def remove_file(path: str) -> dict:
+def lookup(path: str, user: str | None = None) -> dict:
+    """La entrada completa de un archivo confirmado.
+
+    Solo si `user` puede leerla. Un archivo que existe pero no es del usuario
+    se trata como `403`, no como `404`: el usuario llegó aquí a través de `ls`,
+    que ya le ocultó lo ajeno, así que un `403` sobre una ruta que conoce es
+    coherente y no filtra existencia más allá de lo que `ls` ya revela.
+    """
+    entrada = get_entry(path)
+
+    if not security.can_read(entrada.get("owner"), user):
+        raise HTTPException(
+            status_code=403,
+            detail="No autorizado a leer este archivo"
+        )
+
+    return entrada
+
+
+def remove_file(path: str, user: str | None = None) -> dict:
     """Quita la entrada y la devuelve, con sus bloques y sus peers.
 
     No avisa a los peers de los bloques: eso es red, y la red no entra en este
     módulo. Lo lanza el endpoint con lo que aquí se devuelve.
+
+    Solo el propietario (o el sistema sin auth) puede borrar: es exactamente el
+    caso «el usuario A no puede borrar el archivo del usuario B».
     """
     ruta = normalize(path)
     bucket, nombre = _bucket_of_parent(ruta, "El archivo no existe")
@@ -460,7 +511,71 @@ def remove_file(path: str) -> dict:
             detail="La ruta no corresponde a un archivo"
         )
 
+    if not security.can_delete(entrada.get("owner"), user):
+        raise HTTPException(
+            status_code=403,
+            detail="No autorizado a eliminar este archivo"
+        )
+
     del bucket["entries"][nombre]
     write_bucket(bucket)
 
     return entrada
+
+
+def update_block_peers(path: str, file_id: str, index: int, peers: list[str]) -> dict:
+    """Actualiza la lista de peers de un bloque en la entrada confirmada.
+
+    Se usa durante la reparación de réplicas: cuando un bloque se copia a un
+    nuevo peer, los metadatos deben reflejarlo para que las lecturas futuras
+    lo encuentren allí.
+    """
+    ruta = normalize(path)
+    bucket, nombre = _bucket_of_parent(ruta, "El archivo no existe")
+    entrada = bucket["entries"].get(nombre)
+
+    if (
+        entrada is None
+        or entrada.get("type") == "directory"
+        or entrada.get("state") != "committed"
+        or entrada.get("file_id") != file_id
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="El archivo no existe"
+        )
+
+    for bloque in entrada["blocks"]:
+        if bloque["index"] == index:
+            bloque["peers"] = list(dict.fromkeys(peers))
+            break
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Bloque no encontrado en la entrada"
+        )
+
+    write_bucket(bucket)
+
+    return entrada
+
+
+def list_all_files() -> list[dict]:
+    """Todos los archivos confirmados cuyo directorio padre le toca a este peer.
+
+    Se usa durante la reparación automática: cada peer solo puede reparar las
+    entradas que guarda localmente.
+    """
+    archivos = []
+
+    for ruta_bucket in METADATA_ROOT.glob("*.json"):
+        bucket = json.loads(ruta_bucket.read_text(encoding="utf-8"))
+
+        for entrada in bucket.get("entries", {}).values():
+            if (
+                entrada.get("type") != "directory"
+                and entrada.get("state") == "committed"
+            ):
+                archivos.append(entrada)
+
+    return archivos

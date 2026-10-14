@@ -50,17 +50,29 @@ con sus tests:
 
 Lo que **no** está y es del hito 3:
 
-- **Replicación.** El factor de réplica vale 1 y está en un solo sitio
-  (`metadata.REPLICAS`). El anillo ya devuelve N peers distintos para una clave
-  y el `commit` ya exige N confirmaciones distintas: subirlo a 3 no pide tocar
-  la lógica, pide decidir qué pasa cuando una réplica falla.
+- **Reparación de réplicas.** El factor de réplica es configurable por entorno
+  (`DFSHA_REPLICAS`), `allocate` planea N peers distintos, el cliente reintenta
+  con candidatos alternativos y el `commit` exige N confirmaciones distintas.
+  Lo que falta es la reparación automática cuando una réplica desaparece de
+  forma permanente.
 - **Reconciliación de anillos divergentes.** Hoy, un peer que no contesta a un
   alta se queda con una membresía vieja y nadie lo repara.
-- **Tolerancia a fallos durante una operación.** Un `send` con un peer caído
-  falla entero y deja el nombre reservado; soltarlo es un `rm` manual.
+- **Tolerancia a fallos durante una operación.** Si un `send` no consigue
+  suficientes réplicas porque hay demasiados peers caídos, falla entero y deja
+  el nombre reservado; soltarlo es un `rm` manual.
 - **Redistribución de bloques al entrar o salir un peer.** Las claves se
   remapean, pero los `.blk` que ya están escritos no se mueven solos.
-- **Autenticación, TLS y cuotas.** No hay ninguna.
+- **Cuotas.** No hay.
+
+### Seguridad (RNF6) — implementado
+
+El **RNF6 está implementado**: autenticación peer ↔ peer (`X-Peer-Token`),
+autenticación de clientes por usuario (`X-User`/`X-User-Token`), autorización
+por propietario (metadata + capabilities firmadas de bloque), cifrado en
+tránsito (TLS) y cifrado en reposo (AES-256-GCM). Todo es opt-in por variables
+de entorno; el despliegue de Docker arranca con seguridad habilitada. El detalle
+completo —modelo de seguridad, flujos, variables, pruebas— está en
+**[HITO3_SEGURIDAD.md](HITO3_SEGURIDAD.md)**.
 
 ---
 
@@ -519,6 +531,31 @@ defecto ([.env.example](.env.example) las documenta):
 | `DFSHA_STORAGE_ROOT` | `server/storage` | Su raíz de datos. Tres peers en la misma máquina necesitan tres distintas o se pisan los bloques |
 | `DFSHA_BLOCK_SIZE` | `4194304` (4 MiB) | El tamaño de bloque |
 | `DFSHA_VNODES` | `128` | Posiciones virtuales por peer. No bajarlo: con pocas, tres peers reparten mal |
+
+**Variables de seguridad (RNF6), todas opt-in** — detalle en
+[HITO3_SEGURIDAD.md](HITO3_SEGURIDAD.md):
+
+| Variable | Qué es |
+|---|---|
+| `DFSHA_REQUIRE_AUTH` | Fail-closed: aborta si faltan secretos; metadata/bloques legacy fallan cerrados |
+| `DFSHA_REQUIRE_TLS` | Fail-closed de TLS: exige HTTPS con cert+clave+CA, sin fallback a HTTP |
+| `DFSHA_PEER_TOKEN` | Secreto de autenticación peer ↔ peer (`X-Peer-Token`) |
+| `DFSHA_USERS` | Credenciales de usuario `alice=token,bob=token` |
+| `DFSHA_MASTER_KEY` | Clave AES-256-GCM del cifrado en reposo (hex/base64, 32 bytes) |
+| `DFSHA_CAP_SECRET` / `DFSHA_CAP_TTL` | Firma y validez de las capabilities de bloque |
+| `DFSHA_TLS_CERT` / `DFSHA_TLS_KEY` / `DFSHA_TLS_CA` | Certificado, clave y CA para TLS |
+| `DFSHA_USER` / `DFSHA_USER_TOKEN` | Identidad que el cliente CLI envía en cada operación |
+
+Con seguridad activada, el peer se arranca con `python -m server` (habilita TLS
+si hay cert/clave) y el cliente necesita `DFSHA_USER`/`DFSHA_USER_TOKEN`. Los
+certificados de desarrollo se generan con `./scripts/generate_certs.sh`. El
+despliegue RNF6 completo con HTTPS real se levanta con el overlay de TLS:
+
+```bash
+./scripts/generate_certs.sh ./certs peer1 peer2 peer3
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --wait
+DFSHA_COMPOSE_FILES="docker-compose.yml docker-compose.tls.yml" python demo/guion.py
+```
 
 **Levantar tres peers a mano.** Tres terminales, una por peer. En PowerShell:
 

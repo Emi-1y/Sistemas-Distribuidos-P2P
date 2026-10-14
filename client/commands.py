@@ -14,6 +14,52 @@ HEALTH_TIMEOUT = 2
 PEER_URL = None
 
 
+# ---------------------------------------------------------------------------
+# Credenciales y TLS del cliente — RNF6
+#
+# La identidad del usuario y la verificación del certificado se leen del
+# entorno y se adjuntan automáticamente a cada petición: el usuario del REPL no
+# tiene que escribir ni el token ni la ruta del CA en cada comando. Sin
+# configurar nada, no se envía credencial y se verifica contra las CAs del
+# sistema, de modo que el cliente se comporta como antes del RNF6.
+# ---------------------------------------------------------------------------
+
+def _user():
+    return os.environ.get("DFSHA_USER", "").strip()
+
+
+def _user_token():
+    return os.environ.get("DFSHA_USER_TOKEN", "").strip()
+
+
+def auth_headers(extra: dict | None = None) -> dict:
+    """Cabeceras de identidad del cliente, más las que se pasen.
+
+    `X-User` identifica al usuario y `X-User-Token` lo acredita. Solo se añaden
+    si hay usuario configurado; el token nunca se imprime ni se registra.
+    `extra` sirve para cabeceras por petición, como la capability de bloque.
+    """
+    cabeceras = dict(extra or {})
+    usuario = _user()
+
+    if usuario:
+        cabeceras["X-User"] = usuario
+        cabeceras["X-User-Token"] = _user_token()
+
+    return cabeceras
+
+
+def tls_verify():
+    """Qué pasar a `verify=` de requests: la ruta al CA local, o True.
+
+    Nunca False: la verificación del certificado no se desactiva. Si
+    DFSHA_TLS_CA no está, se verifica contra las CAs del sistema.
+    """
+    ca = os.environ.get("DFSHA_TLS_CA", "").strip()
+
+    return ca if ca else True
+
+
 def bootstrap_addresses():
     """Las direcciones de DFSHA_BOOTSTRAP, en orden.
 
@@ -45,7 +91,8 @@ def connect():
         try:
             respuesta = requests.get(
                 f"{address}/health",
-                timeout=HEALTH_TIMEOUT
+                timeout=HEALTH_TIMEOUT,
+                verify=tls_verify(),
             )
 
             if respuesta.status_code == 200:
@@ -85,7 +132,9 @@ def ls(current_path: str):
     try:
         response = requests.get(
             f"{PEER_URL}/files",
-            params={"path": current_path}
+            params={"path": current_path},
+            headers=auth_headers(),
+            verify=tls_verify(),
         )
 
         if response.status_code == 200:
@@ -115,7 +164,9 @@ def mkdir(current_path: str, name: str):
     try:
         response = requests.post(
             f"{PEER_URL}/directories",
-            json={"path": path}
+            json={"path": path},
+            headers=auth_headers(),
+            verify=tls_verify(),
         )
 
         if response.status_code == 200:
@@ -133,7 +184,9 @@ def rmdir(current_path: str, name: str):
     try:
         response = requests.delete(
             f"{PEER_URL}/directories",
-            params={"path": path}
+            params={"path": path},
+            headers=auth_headers(),
+            verify=tls_verify(),
         )
 
         if response.status_code == 200:
@@ -151,7 +204,9 @@ def rm(current_path: str, name: str):
     try:
         response = requests.delete(
             f"{PEER_URL}/files",
-            params={"path": path}
+            params={"path": path},
+            headers=auth_headers(),
+            verify=tls_verify(),
         )
 
         if response.status_code == 200:
@@ -174,7 +229,11 @@ def peer_addresses() -> dict[str, str]:
     Se pide una vez por operacion y no se cachea: la membresia cambia, y un
     mapa viejo manda bytes a una direccion muerta.
     """
-    respuesta = requests.get(f"{PEER_URL}/ring")
+    respuesta = requests.get(
+        f"{PEER_URL}/ring",
+        headers=auth_headers(),
+        verify=tls_verify(),
+    )
 
     if respuesta.status_code != 200:
         raise transfer.TransferError("el peer no supo decir como esta el anillo")
@@ -185,14 +244,10 @@ def peer_addresses() -> dict[str, str]:
     }
 
 
-def _subida(origen, entrada, bloque, direcciones):
-    """La tarea de subir un bloque a todos sus peers.
 
-    Se sube a todos los que el plan nombra, no al primero: con factor de
-    replica 3 el commit exige tres peers distintos, y subir solo al primero
-    provocaria un 422 que nadie sabria leer. Hoy la lista tiene un elemento y
-    el bucle da una vuelta.
-    """
+def _subida(origen, entrada, bloque, direcciones):
+    """Sube un bloque e intenta otros peers si alguno falla."""
+
     def subir():
         datos = transfer.read_chunk(
             origen, bloque["index"], entrada["block_size"], bloque["size"]
@@ -200,25 +255,60 @@ def _subida(origen, entrada, bloque, direcciones):
         suma = transfer.checksum(datos)
         puestos = []
 
-        for peer_id in bloque["peers"]:
-            respuesta = requests.put(
-                f"{direcciones[peer_id]}/blocks"
-                f"/{entrada['file_id']}/{bloque['index']}",
-                data=datos,
-                headers={"X-Block-Checksum": suma},
-            )
+        # Intentar todos los candidatos disponibles, no solo los iniciales.
+        candidatos = bloque.get("candidates") or bloque["peers"]
+
+        # Si el plan no especifica el factor, conservar el comportamiento anterior.
+        objetivo = entrada.get(
+            "replication_factor", len(bloque["peers"])
+        )
+
+        for peer_id in dict.fromkeys(candidatos):
+            if peer_id not in direcciones:
+                # El anillo ya no conoce este peer; lo saltamos y dejamos que
+                # upload_blocks lo detecte de forma centralizada.
+                continue
+
+            # La capability de escritura la emitió el dueño de la metadata en
+            # el `allocate`; viaja en X-Block-Cap y es lo que autoriza el PUT
+            # directo contra el peer de datos. Si la seguridad está apagada no
+            # viene y no se envía.
+            cabeceras = {"X-Block-Checksum": suma}
+            write_cap = entrada.get("write_cap")
+
+            if write_cap:
+                cabeceras["X-Block-Cap"] = write_cap
+
+            try:
+                respuesta = requests.put(
+                    f"{direcciones[peer_id]}/blocks"
+                    f"/{entrada['file_id']}/{bloque['index']}",
+                    data=datos,
+                    headers=cabeceras,
+                    timeout=HEALTH_TIMEOUT,
+                    verify=tls_verify(),
+                )
+            except requests.RequestException:
+                # Si el peer no responde, probar con el siguiente.
+                continue
 
             if respuesta.status_code != 201:
-                raise transfer.TransferError(
-                    f"el peer {peer_id} rechazo el bloque {bloque['index']} "
-                    f"con un {respuesta.status_code}"
-                )
+                # Si rechaza el bloque, intentar con otro peer.
+                continue
 
             puestos.append(peer_id)
 
-        # Lo que se reporta es donde quedo el bloque de verdad, no donde lo
-        # planeo el allocate: el plan era una intencion, y el unico que conoce
-        # el hecho es quien recibio los 201.
+            # Ya tenemos suficientes réplicas distintas.
+            if len(puestos) >= objetivo:
+                break
+
+        if len(puestos) < objetivo:
+            raise transfer.TransferError(
+                f"No se pudieron guardar suficientes réplicas del bloque "
+                f"{bloque['index']}: se necesitan {objetivo} y se guardaron "
+                f"{len(puestos)}"
+            )
+
         return {
             "index": bloque["index"],
             "checksum": suma,
@@ -233,7 +323,7 @@ def upload_blocks(origen, entrada, direcciones) -> list[dict]:
     desconocidos = sorted({
         peer_id
         for bloque in entrada["blocks"]
-        for peer_id in bloque["peers"]
+        for peer_id in (bloque.get("candidates") or bloque["peers"])
         if peer_id not in direcciones
     })
 
@@ -257,10 +347,20 @@ def _bajada(entrada, bloque, direcciones):
             if peer_id not in direcciones:
                 continue
 
+            # La capability de lectura la emitió el dueño de la metadata en el
+            # `lookup`; autoriza el GET directo del bloque contra su peer.
+            cabeceras = {}
+            read_cap = entrada.get("read_cap")
+
+            if read_cap:
+                cabeceras["X-Block-Cap"] = read_cap
+
             try:
                 respuesta = requests.get(
                     f"{direcciones[peer_id]}/blocks"
-                    f"/{entrada['file_id']}/{bloque['index']}"
+                    f"/{entrada['file_id']}/{bloque['index']}",
+                    headers=cabeceras,
+                    verify=tls_verify(),
                 )
             except requests.RequestException:
                 continue
@@ -326,6 +426,8 @@ def send(current_path: str, filename: str):
         respuesta = requests.post(
             f"{PEER_URL}/files/allocate",
             json={"path": destino, "size": origen.stat().st_size},
+            headers=auth_headers(),
+            verify=tls_verify(),
         )
 
         if respuesta.status_code != 200:
@@ -346,6 +448,8 @@ def send(current_path: str, filename: str):
                 "file_id": entrada["file_id"],
                 "blocks": confirmados,
             },
+            headers=auth_headers(),
+            verify=tls_verify(),
         )
 
         if respuesta.status_code != 200:
@@ -366,8 +470,14 @@ def send(current_path: str, filename: str):
                 "borra los bloques que si llegaron."
             )
 
-    except requests.RequestException:
-        print("Error: no se pudo conectar con el servidor")
+    except requests.RequestException as exc:
+        print(f"Error de conexión: {type(exc).__name__}: {exc}")
+
+        if reservado:
+            print(
+                f"No se subio nada en firme. 'rm {destino}' libera el nombre y "
+                "borra los bloques que si llegaron."
+            )
 
 
 def receive(current_path: str, filename: str):
@@ -390,7 +500,9 @@ def receive(current_path: str, filename: str):
 
         respuesta = requests.get(
             f"{PEER_URL}/files/lookup",
-            params={"path": remoto}
+            params={"path": remoto},
+            headers=auth_headers(),
+            verify=tls_verify(),
         )
 
         if respuesta.status_code != 200:
@@ -420,7 +532,9 @@ def change_directory(current_path: str, target: str) -> str:
     try:
         response = requests.get(
             f"{PEER_URL}/files",
-            params={"path": new_path}
+            params={"path": new_path},
+            headers=auth_headers(),
+            verify=tls_verify(),
         )
 
         if response.status_code == 200:
@@ -432,3 +546,58 @@ def change_directory(current_path: str, target: str) -> str:
     except requests.RequestException:
         print("Error: no se pudo conectar con el servidor")
         return current_path
+
+
+def repair(current_path: str, filename: str):
+    """Repara las réplicas de un archivo confirmado en el DFS."""
+    remoto = build_path(current_path, filename)
+
+    try:
+        response = requests.post(
+            f"{PEER_URL}/files/repair",
+            params={"path": remoto},
+            headers=auth_headers(),
+            verify=tls_verify(),
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+
+            if data.get("repaired"):
+                print(
+                    f"Archivo reparado: {len(data['changes'])} réplica(s) "
+                    "restaurada(s)"
+                )
+            else:
+                print("El archivo ya tiene todas sus réplicas")
+
+            return
+
+        print_error(response)
+
+    except requests.RequestException:
+        print("Error: no se pudo conectar con el servidor")
+
+
+def repair_all():
+    """Repara todas las entradas confirmadas que le tocan al peer conectado."""
+    try:
+        response = requests.post(
+            f"{PEER_URL}/files/repair-all",
+            headers=auth_headers(),
+            verify=tls_verify(),
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            print(
+                f"Escaneados {data['scanned']} archivo(s), "
+                f"reparados {data['repaired_files']}, "
+                f"{data['total_changes']} réplica(s) restaurada(s)"
+            )
+            return
+
+        print_error(response)
+
+    except requests.RequestException:
+        print("Error: no se pudo conectar con el servidor")

@@ -41,6 +41,13 @@ Request → `{"peer_id": "...", "address": "http://peer2:9002"}`
 | `400` | `address` no es una URL http válida | `Dirección de peer inválida` |
 | `409` | Ese `peer_id` ya está en el anillo con otra dirección | `El peer ya está registrado` |
 
+### `POST /peers/reconcile`
+Fuerza la reconciliación del anillo local con todos los peers conocidos. Cada
+peer consulta `GET /ring` de los demás y añade a su anillo los peers que no
+conocía. No sobrescribe direcciones de peers ya registrados.
+
+`200` → `{"ring_version": "...", "updated_from": ["peer2"], "peers": [...]}`
+
 ### Colocación
 Dos funciones, en un solo módulo:
 
@@ -105,6 +112,15 @@ escrito antes de responder — no quedan bloques corruptos.
 
 | Código | Cuándo | Detalle |
 |---|---|---|
+| `400` | `index` no es un entero mayor o igual que 0, o `file_id` no es un UUID | `Identificador de bloque inválido` |
+| `404` | No existe ese bloque en este peer | `El bloque no existe` |
+
+### `HEAD /blocks/{file_id}/{index}`
+Verifica la existencia del bloque en este peer sin devolver su contenido.
+
+| Código | Cuándo | Detalle |
+|---|---|---|
+| `200` | El bloque existe | (sin cuerpo) |
 | `400` | `index` no es un entero mayor o igual que 0, o `file_id` no es un UUID | `Identificador de bloque inválido` |
 | `404` | No existe ese bloque en este peer | `El bloque no existe` |
 
@@ -222,6 +238,27 @@ trivial; con factor 3 funciona igual sin tocar el código.
 ### `GET /files/lookup?path=...`
 `200` → la entrada completa. Solo entradas `committed`.
 `404` → `El archivo no existe`
+
+### `POST /files/repair?path=...`
+Repara las réplicas de un archivo confirmado. El dueño de la entrada verifica
+el estado real de cada bloque y copia los que faltan desde un peer vivo hacia
+peers nuevos del anillo.
+
+`200` → `{"path": "...", "file_id": "...", "repaired": true|false, "replication_factor": 2, "changes": [{"index": 0, "from": "peer1", "to": "peer3"}]}`
+
+| Código | Cuándo | Detalle |
+|---|---|---|
+| `404` | La ruta no es un archivo confirmado | `El archivo no existe` |
+| `422` | Un bloque no tiene ninguna réplica viva para copiar | `El bloque N no tiene ninguna réplica viva` |
+| `422` | El bloque copiado no coincide con el checksum de la entrada | `El bloque N llegó corrupto desde ...` |
+| `503` | No se pudo leer o escribir un bloque durante la copia | `El peer responsable no está disponible` |
+
+### `POST /files/repair-all`
+Repara todas las entradas confirmadas que le tocan a este peer. Se usa para
+recuperar réplicas perdidas de forma masiva, ya sea por un peer caído o por
+una corrupción detectada.
+
+`200` → `{"scanned": 5, "repaired_files": 2, "total_changes": 4, "details": [{"path": "...", "changes": 2}]}`
 
 ### Operaciones de directorio
 Se mudan del monolito sin cambiar su contrato: `GET /files?path=` (ls),

@@ -16,11 +16,28 @@ contenedor necesitaria el socket de Docker montado dentro; uno que viviera solo
 fuera no podria subir un bloque.
 """
 
+import os
 import subprocess
 import sys
 
 
-COMPOSE = ["docker", "compose"]
+# Por defecto, `docker compose` con el compose base (HTTP). Para la demo RNF6
+# con HTTPS real se superpone el overlay de TLS indicándolo por entorno:
+#
+#   DFSHA_COMPOSE_FILES="docker-compose.yml docker-compose.tls.yml" python demo/guion.py
+#
+# Así el guion no decide la topología de red: solo orquesta la que le pasen.
+def _compose_base() -> list[str]:
+    ficheros = os.environ.get("DFSHA_COMPOSE_FILES", "").split()
+    orden = ["docker", "compose"]
+
+    for fichero in ficheros:
+        orden += ["-f", fichero]
+
+    return orden
+
+
+COMPOSE = _compose_base()
 
 ANCHO = 72
 

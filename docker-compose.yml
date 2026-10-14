@@ -25,6 +25,30 @@ x-peer: &peer
     # despliegue de verdad usaría los 4 MiB del .env.example.
     DFSHA_BLOCK_SIZE: "65536"
     DFSHA_VNODES: "128"
+    DFSHA_REPLICAS: "2"
+    # --- Seguridad (RNF6) ---------------------------------------------------
+    # Lo comun va en el ancla, igual que el bootstrap: los tres peers comparten
+    # el mismo token de peer, las mismas credenciales de usuario, la misma
+    # clave de cifrado y el mismo secreto de capabilities, o no podrian
+    # entenderse. Siguen la regla de simetria: lo unico que cambia entre peers
+    # es su identidad.
+    #
+    # Estos valores son de DEMOSTRACION. En un despliegue real se inyectan por
+    # .env/secretos y nunca se escriben en el compose. Fijarlos aqui hace que
+    # `docker compose up` levante el sistema CON seguridad habilitada, que es
+    # el modo en que debe ejecutarse la demo final.
+    DFSHA_REQUIRE_AUTH: "true"
+    DFSHA_PEER_TOKEN: "demo-peer-token-no-usar-en-produccion"
+    DFSHA_USERS: "alice=demo-alice-token,bob=demo-bob-token"
+    # 32 bytes en hex para AES-256-GCM (solo demo).
+    DFSHA_MASTER_KEY: "4a1f6c2e8b9d0a7f3e5c1b8d2a4f6e9c0b3d5a7f1e8c2b4d6a9f0e3c5b7d1a9f"
+    DFSHA_CAP_SECRET: "demo-cap-secret-no-usar-en-produccion"
+    # TLS desactivado por defecto para que el healthcheck y la demo hablen por
+    # HTTP sin montar certificados. Para habilitarlo, genera los certs con
+    # scripts/generate_certs.sh, móntalos como volumen y define por servicio
+    # DFSHA_TLS_CERT / DFSHA_TLS_KEY / DFSHA_TLS_CA (ver docker-compose.tls.yml
+    # de ejemplo en HITO3_SEGURIDAD.md).
+
   healthcheck:
     # Python y no curl: instalar un paquete en la imagen solo para preguntar si
     # el peer está vivo, cuando dentro ya hay un intérprete con urllib, es peso
@@ -78,7 +102,13 @@ services:
     # El perfil es lo que lo deja fuera de `up`: `run` lo activa solo, y sin él
     # un `up` dejaría un REPL sentado en un contenedor al que nadie habla.
     profiles: ["cli"]
-    environment: *entorno
+    environment:
+      <<: *entorno
+      # El cliente arranca autenticado como alice: envia X-User/X-User-Token
+      # en cada operacion. Cambia a bob (o define otras credenciales) para ver
+      # la autorizacion por propietario en accion.
+      DFSHA_USER: alice
+      DFSHA_USER_TOKEN: demo-alice-token
     depends_on:
       peer1: {condition: service_healthy}
       peer2: {condition: service_healthy}
