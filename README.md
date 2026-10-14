@@ -74,6 +74,15 @@ de entorno; el despliegue de Docker arranca con seguridad habilitada. El detalle
 completo —modelo de seguridad, flujos, variables, pruebas— está en
 **[HITO3_SEGURIDAD.md](HITO3_SEGURIDAD.md)**.
 
+### Despliegue multi-VM (preparación AWS)
+
+Para desplegar un SuperPeer por máquina virtual —misma imagen, mismo
+`docker-compose.peer.yml` y mismo comando en las tres VMs, con la sola
+diferencia de un `.env` y el certificado de cada peer— consulta
+**[DESPLIEGUE_MULTI_VM.md](DESPLIEGUE_MULTI_VM.md)**. El entorno multi-VM es
+aditivo: el despliegue local (`docker-compose.yml`, `docker-compose.tls.yml`,
+`demo/guion.py`) sigue funcionando igual.
+
 ---
 
 ## 3. Arquitectura

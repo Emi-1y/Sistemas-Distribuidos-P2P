@@ -1,0 +1,83 @@
+# DFSha — un SuperPeer por máquina (despliegue multi-VM).
+#
+# Este compose levanta UN solo peer, genérico, en una VM. Las tres VMs usan
+# EXACTAMENTE el mismo archivo, la misma imagen y el mismo comando; lo único
+# que cambia entre ellas es el archivo .env y el certificado individual. Por
+# eso aquí no hay `peer1`, `peer2` ni `peer3`: el peer no sabe cuál es más que
+# por su configuración externa (DFSHA_PEER_ID / DFSHA_ADDRESS / ...), y eso es
+# lo que mantiene la arquitectura completamente simétrica.
+#
+# Uso en cada VM (idéntico en VM1, VM2 y VM3):
+#
+#   docker compose --env-file .env -f docker-compose.peer.yml up -d
+#
+# El .env trae la identidad y las rutas propias de esa VM; ver .env.peer.example.
+#
+# Diferencias deliberadas con el compose local (docker-compose.yml):
+#   - Un servicio, no tres: cada VM corre su propio contenedor.
+#   - Sin red Docker compartida entre peers: la comunicación peer↔peer sale por
+#     la interfaz del host hacia la VPN, usando las direcciones de DFSHA_ADDRESS.
+#   - Persistencia por bind mount a un path del host configurable
+#     (DFSHA_DATA_DIR), no un volumen con nombre compartido.
+#   - Puerto configurable (DFSHA_PORT), por defecto 9001: en multi-VM los tres
+#     peers escuchan el MISMO puerto, cada uno en su máquina.
+
+services:
+  peer:
+    # La MISMA imagen para las tres VMs. Se construye con:
+    #   docker build -t dfsha-peer:latest .
+    # o se deja que compose la construya con el Dockerfile de este repo.
+    image: ${DFSHA_IMAGE:-dfsha-peer:latest}
+    build: .
+
+    # El contenedor lee TODA su configuración del entorno del .env. No se fija
+    # aquí ninguna variable: así este archivo es genérico y los secretos no
+    # viven en Git. Las variables van en --env-file .env.
+    env_file:
+      - .env
+
+    # Arranque con TLS leído de la config (igual que el despliegue seguro
+    # local). `python -m server` habilita HTTPS cuando hay cert/clave y aborta
+    # si DFSHA_REQUIRE_TLS=true y falta material.
+    command: python -m server
+
+    # Puerto configurable. En multi-VM se publica el mismo puerto en cada host
+    # (por defecto 9001). El contenedor escucha en el puerto que indique
+    # DFSHA_ADDRESS; mantén DFSHA_PORT alineado con ese puerto.
+    ports:
+      - "${DFSHA_PORT:-9001}:${DFSHA_PORT:-9001}"
+
+    # Persistencia local de ESTA VM: metadata y bloques en un path del host,
+    # configurable, montado en el STORAGE_ROOT del contenedor. Reiniciar el
+    # contenedor no borra nada. Cada VM tiene su propio almacenamiento; NO se
+    # comparte entre máquinas.
+    volumes:
+      - "${DFSHA_DATA_DIR:-/opt/dfsha/data}:${DFSHA_STORAGE_ROOT:-/datos}"
+      # Certificados de ESTA VM (su cert+clave y el ca.crt), de solo lectura.
+      # El directorio del host se configura con DFSHA_CERTS_DIR.
+      - "${DFSHA_CERTS_DIR:-/opt/dfsha/certs}:/certs:ro"
+
+    # Un contenedor que muere se levanta solo: una VM que se reinicia vuelve a
+    # tener su peer sin intervención.
+    restart: unless-stopped
+
+    # Healthcheck que funciona con HTTPS obligatorio: interroga la dirección
+    # que el propio peer anuncia (DFSHA_ADDRESS) y verifica el certificado
+    # contra el CA local. Sin -k, sin --insecure, sin verify=False. Si el peer
+    # sirviera HTTP (DFSHA_REQUIRE_TLS=false), DFSHA_ADDRESS sería http:// y el
+    # mismo comando también funciona.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import os, ssl, urllib.request
+          url = os.environ["DFSHA_ADDRESS"] + "/health"
+          ca = os.environ.get("DFSHA_TLS_CA")
+          ctx = ssl.create_default_context(cafile=ca) if ca else None
+          urllib.request.urlopen(url, context=ctx, timeout=3).read()
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s

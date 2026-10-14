@@ -29,6 +29,7 @@ ENV/
 .env
 .env.*
 !.env.example
+!.env.peer.example
 
 # =========================================================
 # macOS
