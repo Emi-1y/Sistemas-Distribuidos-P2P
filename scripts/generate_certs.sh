@@ -8,16 +8,32 @@
 #                             DFSHA_TLS_CA en cliente y peers para verificar.
 #   peerN.key / peerN.crt     Certificado de cada peer, firmado por la CA.
 #
-# El certificado de cada peer incluye como SAN tanto el nombre de contenedor
-# (peerN) como localhost y 127.0.0.1, de modo que vale para hablar por el
-# nombre del anillo dentro de la red de Docker y por localhost en el anfitrión.
+# El certificado de cada peer incluye como SAN, por defecto, su propio nombre
+# (peerN), localhost y 127.0.0.1, de modo que vale para hablar por el nombre
+# del anillo dentro de la red de Docker y por localhost en el anfitrión.
 #
-# Esto es SOLO para desarrollo: una CA local y certificados autofirmados. En
-# producción se usarían certificados emitidos por una CA de confianza.
+# Para multi-VM, cada peer necesita además un SAN con su DNS privado o su IP de
+# la VPN. Esos SAN se pasan por variable de entorno, sin hardcodear ninguna IP
+# en este script:
+#
+#   DFSHA_SAN_<PEER>="DNS:peerN.dfsha.internal,IP:10.10.0.11"
+#
+# donde <PEER> es el nombre del peer en MAYÚSCULAS (p. ej. DFSHA_SAN_PEER1).
+# Las entradas se añaden a los SAN por defecto. Formato de cada entrada:
+# `DNS:nombre` o `IP:1.2.3.4`, separadas por comas.
+#
+# Esto es SOLO para desarrollo/laboratorio: una CA local y certificados
+# firmados por ella. En producción se usarían certificados de una CA de
+# confianza. La CA se emite con CA:TRUE / keyCertSign / cRLSign y no se
+# debilita.
 #
 # Uso:
-#   ./scripts/generate_certs.sh                 # peer1 peer2 peer3 en ./certs
+#   ./scripts/generate_certs.sh                      # peer1 peer2 peer3 en ./certs
 #   ./scripts/generate_certs.sh ./mis-certs peerA peerB
+#   DFSHA_SAN_PEER1="DNS:peer1.dfsha.internal,IP:10.10.0.11" \
+#   DFSHA_SAN_PEER2="DNS:peer2.dfsha.internal,IP:10.10.0.12" \
+#   DFSHA_SAN_PEER3="DNS:peer3.dfsha.internal,IP:10.10.0.13" \
+#     ./scripts/generate_certs.sh ./certs peer1 peer2 peer3
 
 set -euo pipefail
 
@@ -76,6 +92,48 @@ for PEER in "${PEERS[@]}"; do
     -subj "/C=CO/O=DFSha/CN=${PEER}" \
     -out "${PEER}.csr"
 
+  # SAN por defecto: el nombre del peer, localhost y 127.0.0.1.
+  dns_n=1
+  ip_n=1
+  alt_names="DNS.${dns_n} = ${PEER}"
+  dns_n=$((dns_n + 1))
+  alt_names="${alt_names}
+DNS.${dns_n} = localhost"
+  dns_n=$((dns_n + 1))
+  alt_names="${alt_names}
+IP.${ip_n} = 127.0.0.1"
+  ip_n=$((ip_n + 1))
+
+  # SAN extra para multi-VM, leídos de DFSHA_SAN_<PEER> (sin IPs hardcodeadas).
+  peer_upper=$(printf '%s' "$PEER" | tr '[:lower:]-' '[:upper:]_')
+  san_var="DFSHA_SAN_${peer_upper}"
+  extra_sans="${!san_var:-}"
+
+  if [ -n "$extra_sans" ]; then
+    IFS=',' read -ra entradas <<< "$extra_sans"
+    for entrada in "${entradas[@]}"; do
+      entrada="$(printf '%s' "$entrada" | xargs)"   # trim
+      tipo="${entrada%%:*}"
+      valor="${entrada#*:}"
+
+      case "$tipo" in
+        DNS|dns)
+          alt_names="${alt_names}
+DNS.${dns_n} = ${valor}"
+          dns_n=$((dns_n + 1))
+          ;;
+        IP|ip)
+          alt_names="${alt_names}
+IP.${ip_n} = ${valor}"
+          ip_n=$((ip_n + 1))
+          ;;
+        *)
+          echo "   aviso: SAN ignorado (usa DNS:... o IP:...): ${entrada}" >&2
+          ;;
+      esac
+    done
+  fi
+
   cat > "${PEER}.ext" <<EOF
 authorityKeyIdentifier=keyid,issuer
 basicConstraints=CA:FALSE
@@ -83,9 +141,7 @@ keyUsage = digitalSignature, keyEncipherment
 subjectAltName = @alt_names
 
 [alt_names]
-DNS.1 = ${PEER}
-DNS.2 = localhost
-IP.1 = 127.0.0.1
+${alt_names}
 EOF
 
   openssl x509 -req -in "${PEER}.csr" -CA ca.crt -CAkey ca.key \
