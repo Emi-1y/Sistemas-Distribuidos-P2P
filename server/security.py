@@ -370,6 +370,25 @@ def require_user(
 
     return usuario
 
+def require_user_or_peer(
+    x_user: str | None = Header(default=None),
+    x_user_token: str | None = Header(default=None),
+    x_peer_token: str | None = Header(default=None),
+) -> str | None:
+    """Acepta un usuario autenticado o un peer autenticado.
+
+    Se usa en endpoints como /ring, que necesita consultar tanto el cliente
+    como la reconciliación interna entre peers.
+    """
+    if peer_auth_enabled() and valid_peer_token(x_peer_token):
+        return x_user
+
+    return require_user(
+        x_user=x_user,
+        x_user_token=x_user_token,
+        x_peer_token=x_peer_token,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Autorización por owner

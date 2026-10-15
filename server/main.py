@@ -134,7 +134,7 @@ def health():
 
 
 @app.get("/ring")
-def get_ring(_: str | None = Depends(security.require_user)):
+def get_ring(_: str | None = Depends(security.require_user_or_peer)):
     # El cliente consulta /ring para conocer la topología antes de hablar
     # directamente con cada peer de datos; por eso exige identidad de cliente
     # (o X-Peer-Token en la reconciliación interna), pero NO es peer-only.
