@@ -9,6 +9,7 @@ from client import transfer
 
 DEFAULT_PEER = "http://127.0.0.1:8000"
 HEALTH_TIMEOUT = 2
+TRANSFER_TIMEOUT = 60
 
 # El peer con el que se esta hablando. Lo fija connect() al arrancar el REPL.
 PEER_URL = None
@@ -285,7 +286,7 @@ def _subida(origen, entrada, bloque, direcciones):
                     f"/{entrada['file_id']}/{bloque['index']}",
                     data=datos,
                     headers=cabeceras,
-                    timeout=HEALTH_TIMEOUT,
+                    timeout=TRANSFER_TIMEOUT,
                     verify=tls_verify(),
                 )
             except requests.RequestException:
