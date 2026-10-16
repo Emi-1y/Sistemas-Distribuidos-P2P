@@ -45,7 +45,7 @@ def _peer_put(url: str, data, headers):
     return httpx.put(url, **kwargs)
 
 
-def repair(path: str, user: str | None = None, internal: bool = False) -> dict:
+def repair(path: str, user: str | None = None, internal: bool = False, excluded_peers: set[str] | None = None) -> dict:
     """Repara las réplicas de un archivo confirmado.
 
     Devuelve un resumen de los cambios realizados. Si el archivo ya tiene
@@ -71,6 +71,8 @@ def repair(path: str, user: str | None = None, internal: bool = False) -> dict:
     replicas_esperadas = entrada.get("replication_factor", config.REPLICAS)
     cambios = []
 
+    excluded_peers = excluded_peers or set()
+
     for bloque in entrada["blocks"]:
         index = bloque["index"]
         checksum = bloque["checksum"]
@@ -90,7 +92,7 @@ def repair(path: str, user: str | None = None, internal: bool = False) -> dict:
 
         fuente = peers_actuales[0]
         nuevos = _elegir_nuevos_peers(
-            file_id, index, peers_actuales, faltantes
+            file_id, index, peers_actuales, faltantes, excluded_peers
         )
 
         for peer_id in nuevos:
@@ -145,9 +147,12 @@ def _elegir_nuevos_peers(
     file_id: str,
     index: int,
     peers_existentes: list[str],
-    cantidad: int
+    cantidad: int,
+    excluded_peers: set[str] | None = None,
 ) -> list[str]:
-    """Elige peers del anillo que no tengan ya el bloque."""
+    """Elige peers del anillo que no tengan ya el bloque ni estén excluidos."""
+    excluded_peers = excluded_peers or set()
+
     candidatos = ring.choose_nodes(
         f"{file_id}:{index}",
         len(ring.LOCAL.peers())
@@ -156,7 +161,10 @@ def _elegir_nuevos_peers(
     return [
         peer_id
         for peer_id in candidatos
-        if peer_id not in peers_existentes
+        if (
+            peer_id not in peers_existentes
+            and peer_id not in excluded_peers
+        )
     ][:cantidad]
 
 
@@ -273,7 +281,7 @@ def repair_for_peer(fallen_peer_id: str) -> dict:
         try:
             # Reparación del sistema: sin usuario, actúa en nombre del sistema
             # para preservar la durabilidad tras caerse un peer.
-            resultado = repair(entrada["path"], internal=True)
+            resultado = repair(entrada["path"], internal=True, excluded_peers={fallen_peer_id})
         except metadata.HTTPException:
             continue
 

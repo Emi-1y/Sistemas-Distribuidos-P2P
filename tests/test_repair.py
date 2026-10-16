@@ -382,6 +382,62 @@ def test_repair_for_peer_solo_toca_archivos_afectados(client, red, arboles):
     assert resultado["repaired_files"] == 1
     assert resultado["total_changes"] == len(afectado["blocks"])
 
+def test_repair_for_peer_no_reutiliza_el_peer_caido(
+    client, red, arboles, monkeypatch
+):
+    """La reparación automática nunca debe elegir como destino al peer caído."""
+    import httpx
+
+    contenido = bytes(range(256)) * 4
+    afectado = crear_archivo(
+        arboles, "/caida.pdf", contenido, replicas=2
+    )
+
+    # El archivo estaba replicado en peer1 + peer2.
+    for bloque in afectado["blocks"]:
+        bloque["peers"] = [PEER1, PEER2]
+        metadata.update_block_peers(
+            afectado["path"],
+            afectado["file_id"],
+            bloque["index"],
+            bloque["peers"],
+        )
+
+    # Forzamos el mismo orden problemático observado en AWS:
+    # peer2 aparece antes que peer3 como candidato.
+    monkeypatch.setattr(
+        ring,
+        "choose_nodes",
+        lambda key, count: [PEER2, PEER1, PEER3],
+    )
+
+    # Simulamos que peer2 está realmente caído:
+    # cualquier intento de escribirle falla.
+    put_original = red.put
+
+    def put_con_peer2_caido(url, **kwargs):
+        if url.startswith(ANILLO[PEER2]):
+            raise httpx.ConnectError("peer2 caído")
+        return put_original(url, **kwargs)
+
+    monkeypatch.setattr(httpx, "put", put_con_peer2_caido)
+
+    resultado = repair.repair_for_peer(PEER2)
+
+    assert resultado["fallen_peer"] == PEER2
+    assert resultado["repaired_files"] == 1
+    assert resultado["total_changes"] == len(afectado["blocks"])
+
+    ficha = metadata.get_entry(afectado["path"])
+
+    for bloque in ficha["blocks"]:
+        assert bloque["peers"] == [PEER1, PEER3]
+        assert (
+            PEER3,
+            afectado["file_id"],
+            bloque["index"],
+        ) in red.almacen
+
 
 def test_health_check_detecta_peer_caido(monkeypatch):
     """health_check_all marca como ca�do al peer que no responde."""
